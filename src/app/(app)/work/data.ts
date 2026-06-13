@@ -1,0 +1,89 @@
+import "server-only";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { db, schema } from "@/db";
+import type { BoardData, WorkItemRow, WorkUser, WorkOrg, WorkTypeLite } from "@/components/work/types";
+
+/** Load everything the board/list/calendar views need in one pass. */
+export async function loadBoardData(): Promise<BoardData> {
+  const [statuses, rawItems, users, orgs, workTypes] = await Promise.all([
+    db.select().from(schema.workStatuses).orderBy(asc(schema.workStatuses.position)),
+    db
+      .select()
+      .from(schema.workItems)
+      .where(and(isNull(schema.workItems.deletedAt), isNull(schema.workItems.completedAt))),
+    db
+      .select({
+        id: schema.users.id,
+        name: schema.users.name,
+        image: schema.users.image,
+        color: schema.users.color,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.active, true))
+      .orderBy(asc(schema.users.name)),
+    db
+      .select({ id: schema.organizations.id, name: schema.organizations.name })
+      .from(schema.organizations)
+      .where(isNull(schema.organizations.deletedAt))
+      .orderBy(asc(schema.organizations.name)),
+    db
+      .select({
+        id: schema.workTypes.id,
+        name: schema.workTypes.name,
+        color: schema.workTypes.color,
+        defaultBudgetMinutes: schema.workTypes.defaultBudgetMinutes,
+      })
+      .from(schema.workTypes)
+      .orderBy(asc(schema.workTypes.name)),
+  ]);
+
+  const items = await enrichItems(rawItems, orgs, workTypes);
+
+  return {
+    statuses,
+    items,
+    users: users as WorkUser[],
+    orgs: orgs as WorkOrg[],
+    workTypes: workTypes as WorkTypeLite[],
+  };
+}
+
+async function enrichItems(
+  rawItems: (typeof schema.workItems.$inferSelect)[],
+  orgs: { id: string; name: string }[],
+  workTypes: WorkTypeLite[],
+): Promise<WorkItemRow[]> {
+  const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+  const wt = new Map(workTypes.map((w) => [w.id, w]));
+
+  // Task counts per work item in one grouped query.
+  const ids = rawItems.map((i) => i.id);
+  const taskCounts = new Map<string, { total: number; done: number }>();
+  if (ids.length) {
+    const rows = await db
+      .select({
+        workItemId: schema.workTasks.workItemId,
+        total: sql<number>`count(*)`,
+        done: sql<number>`sum(case when ${schema.workTasks.completed} then 1 else 0 end)`,
+      })
+      .from(schema.workTasks)
+      .where(inArray(schema.workTasks.workItemId, ids))
+      .groupBy(schema.workTasks.workItemId);
+    for (const r of rows) {
+      taskCounts.set(r.workItemId, { total: Number(r.total), done: Number(r.done ?? 0) });
+    }
+  }
+
+  return rawItems.map((it) => {
+    const counts = taskCounts.get(it.id) ?? { total: 0, done: 0 };
+    const type = it.workTypeId ? wt.get(it.workTypeId) : null;
+    return {
+      ...it,
+      orgName: it.organizationId ? orgName.get(it.organizationId) ?? null : null,
+      workTypeName: type?.name ?? null,
+      workTypeColor: type?.color ?? null,
+      taskTotal: counts.total,
+      taskDone: counts.done,
+    };
+  });
+}
