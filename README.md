@@ -84,7 +84,8 @@ UNC shares are watched with polling automatically.
 
 | Command | Purpose |
 |---|---|
-| `pnpm dev` | dev server (HMR) on the LAN |
+| `pnpm dev` | dev server (Next HMR) on the LAN |
+| `pnpm dev:watch` | dev server that also auto-restarts when `server.ts` changes |
 | `pnpm build` / `pnpm start` | production |
 | `pnpm db:generate` / `db:migrate` / `db:push` | schema → DB |
 | `pnpm db:seed` | demo data |
