@@ -2,7 +2,13 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Edge middleware: cheap cookie gate only (no DB here).
 // Full session validation happens in the (app) layout.
-const PUBLIC = ["/login", "/portal", "/api/portal", "/_next", "/favicon", "/api/socket"];
+// Public surface (no staff session): client portal, portal APIs, payment
+// webhooks, and the healthcheck. Everything else is staff-gated. Portal routes
+// enforce their own client-session auth (kc_portal) where needed.
+const PUBLIC = [
+  "/login", "/portal", "/api/portal", "/api/webhooks", "/healthz",
+  "/_next", "/favicon", "/api/socket",
+];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

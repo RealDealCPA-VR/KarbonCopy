@@ -1,11 +1,11 @@
 "use server";
 
-import { asc, eq, isNull, max } from "drizzle-orm";
+import { and, asc, count, eq, isNull, max } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db, schema } from "@/db";
-import { requireUser } from "@/lib/auth";
+import { requireWrite, requireManager } from "@/lib/auth";
 import { broadcast, emitToUser } from "@/server/realtime";
-import { runStatusChangedAutomators } from "./automators";
+import { runStatusChangedAutomators, runAutomators } from "./automators";
 import type { WorkPriority } from "@/db/schema";
 
 /* ------------------------------------------------------------------ */
@@ -81,7 +81,7 @@ export type WorkItemInput = {
 };
 
 export async function saveWorkItem(input: WorkItemInput) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const title = input.title?.trim();
   if (!title) throw new Error("Title is required");
 
@@ -150,13 +150,19 @@ export async function saveWorkItem(input: WorkItemInput) {
       verb: "assigned",
     });
   }
+  // Fire work_created automators (resilient).
+  try {
+    await runAutomators("work_created", { actorId: user.id, workItemId: created.id });
+  } catch (err) {
+    console.error("[automators] work_created failed:", err);
+  }
   broadcast("work_updated", { id: created.id });
   revalidatePath("/work");
   return created.id;
 }
 
 export async function deleteWorkItem(id: string) {
-  const user = await requireUser();
+  const user = await requireManager();
   await db
     .update(schema.workItems)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
@@ -175,7 +181,7 @@ export async function moveWorkItem(opts: {
   toStatusId: string;
   position: number;
 }) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const [prev] = await db
     .select()
     .from(schema.workItems)
@@ -230,13 +236,14 @@ export async function moveWorkItem(opts: {
 
 /** Set status directly (e.g. from the detail page header) without reordering. */
 export async function setWorkStatus(id: string, statusId: string) {
+  await requireWrite();
   const [item] = await db.select().from(schema.workItems).where(eq(schema.workItems.id, id)).limit(1);
   const pos = item?.boardPosition ?? 0;
   return moveWorkItem({ id, toStatusId: statusId, position: pos });
 }
 
 export async function markWorkComplete(id: string) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const done = await db
     .select()
     .from(schema.workStatuses)
@@ -264,7 +271,7 @@ export async function addTask(input: {
   title: string;
   section?: string | null;
 }) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const title = input.title.trim();
   if (!title) throw new Error("Task title required");
 
@@ -288,7 +295,7 @@ export async function addTask(input: {
 }
 
 export async function toggleTask(taskId: string, completed: boolean) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const [task] = await db.select().from(schema.workTasks).where(eq(schema.workTasks.id, taskId)).limit(1);
   if (!task) throw new Error("Task not found");
   await db
@@ -299,12 +306,37 @@ export async function toggleTask(taskId: string, completed: boolean) {
       completedById: completed ? user.id : null,
     })
     .where(eq(schema.workTasks.id, taskId));
+
+  // Fire automators for task completion (resilient — never block the toggle).
+  if (completed) {
+    try {
+      await runAutomators("task_completed", {
+        actorId: user.id,
+        workItemId: task.workItemId,
+        taskId,
+      });
+      // If this was the last open task, fire `all_tasks_done`.
+      const [{ value: openCount } = { value: 0 }] = await db
+        .select({ value: count() })
+        .from(schema.workTasks)
+        .where(and(eq(schema.workTasks.workItemId, task.workItemId), eq(schema.workTasks.completed, false)));
+      if ((openCount ?? 0) === 0) {
+        await runAutomators("all_tasks_done", {
+          actorId: user.id,
+          workItemId: task.workItemId,
+        });
+      }
+    } catch (err) {
+      console.error("[automators] task_completed failed:", err);
+    }
+  }
+
   revalidatePath(`/work/${task.workItemId}`);
   return { workItemId: task.workItemId };
 }
 
 export async function deleteTask(taskId: string) {
-  await requireUser();
+  await requireWrite();
   const [task] = await db.select().from(schema.workTasks).where(eq(schema.workTasks.id, taskId)).limit(1);
   if (!task) return;
   await db.delete(schema.workTasks).where(eq(schema.workTasks.id, taskId));
@@ -312,7 +344,7 @@ export async function deleteTask(taskId: string) {
 }
 
 export async function reorderTask(taskId: string, direction: "up" | "down") {
-  await requireUser();
+  await requireWrite();
   const [task] = await db.select().from(schema.workTasks).where(eq(schema.workTasks.id, taskId)).limit(1);
   if (!task) return;
   const siblings = await db
@@ -336,7 +368,7 @@ export async function reorderTask(taskId: string, direction: "up" | "down") {
 /* ------------------------------------------------------------------ */
 
 export async function addComment(input: { workItemId: string; body: string }) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const body = input.body.trim();
   if (!body) throw new Error("Comment cannot be empty");
   const [comment] = await db
@@ -386,7 +418,7 @@ export async function applyTemplate(input: {
   startDate?: string | null;
   statusId?: string | null;
 }) {
-  const user = await requireUser();
+  const user = await requireWrite();
   const [tpl] = await db
     .select()
     .from(schema.workTemplates)
@@ -402,6 +434,10 @@ export async function applyTemplate(input: {
 
   const start = toDate(input.startDate) ?? new Date();
 
+  // NOTE: better-sqlite3's db.transaction() callback is synchronous and cannot
+  // wrap the async drizzle calls used throughout this codebase. We therefore
+  // group the related writes (work item → its template tasks → activity) in a
+  // strict, fail-fast order so a failure aborts before later rows are written.
   // Default status = first by position if none provided.
   let statusId = input.statusId || null;
   if (!statusId) {
@@ -460,6 +496,11 @@ export async function applyTemplate(input: {
       workTitle: created.title,
       verb: "assigned",
     });
+  }
+  try {
+    await runAutomators("work_created", { actorId: user.id, workItemId: created.id });
+  } catch (err) {
+    console.error("[automators] work_created (template) failed:", err);
   }
   broadcast("work_updated", { id: created.id });
   revalidatePath("/work");

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { requireUser, hasRole } from "@/lib/auth";
+import { requireAdmin, invalidateUserSessions } from "@/lib/auth";
 import { hashPassword } from "@/lib/password";
 import type {
   AutomatorAction,
@@ -17,12 +17,6 @@ const { watchedRoots, fileRules, users, automators, settings, activities } = sch
 export type ActionResult<T = undefined> =
   | { ok: true; data?: T }
   | { ok: false; error: string };
-
-async function requireAdmin() {
-  const user = await requireUser();
-  if (!hasRole(user, "admin")) throw new Error("FORBIDDEN");
-  return user;
-}
 
 async function audit(actorId: string, verb: string, summary: string) {
   try {
@@ -235,6 +229,12 @@ export async function updateUser(
       .update(users)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(users.id, id));
+    // Force re-auth if the user's role or active status changed (demoted/deactivated
+    // users should be logged out everywhere). Never invalidate the acting admin's own
+    // sessions — the self-deactivate guard above already prevents that case.
+    if ((patch.role !== undefined || patch.active !== undefined) && id !== user.id) {
+      await invalidateUserSessions(id);
+    }
     await audit(user.id, "updated", `Updated user`);
     revalidatePath("/settings");
     return { ok: true };
@@ -252,6 +252,11 @@ export async function resetUserPassword(id: string, password: string): Promise<A
       .update(users)
       .set({ passwordHash: hashPassword(password), updatedAt: new Date() })
       .where(eq(users.id, id));
+    // Log the user out everywhere so the old password's sessions can't continue.
+    // Skip self so the admin isn't kicked out mid-reset (they keep their session).
+    if (id !== user.id) {
+      await invalidateUserSessions(id);
+    }
     await audit(user.id, "updated", `Reset a user password`);
     revalidatePath("/settings");
     return { ok: true };

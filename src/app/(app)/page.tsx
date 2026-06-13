@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { and, desc, eq, gte, isNotNull, isNull, lte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { getCurrentUser } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,23 +17,27 @@ export default async function DashboardPage() {
   const soon = new Date(Date.now() + 7 * 86400_000);
 
   const [openWork, overdue, dueThisWeek, clients, recentFiles, myWork] = await Promise.all([
-    db.select().from(schema.workItems).where(isNull(schema.workItems.completedAt)),
     db
       .select()
       .from(schema.workItems)
-      .where(and(isNull(schema.workItems.completedAt), isNotNull(schema.workItems.dueDate), lte(schema.workItems.dueDate, now))),
+      .where(and(isNull(schema.workItems.completedAt), isNull(schema.workItems.deletedAt))),
     db
       .select()
       .from(schema.workItems)
-      .where(and(isNull(schema.workItems.completedAt), isNotNull(schema.workItems.dueDate), gte(schema.workItems.dueDate, now), lte(schema.workItems.dueDate, soon))),
+      .where(and(isNull(schema.workItems.completedAt), isNull(schema.workItems.deletedAt), isNotNull(schema.workItems.dueDate), lte(schema.workItems.dueDate, now))),
+    db
+      .select()
+      .from(schema.workItems)
+      .where(and(isNull(schema.workItems.completedAt), isNull(schema.workItems.deletedAt), isNotNull(schema.workItems.dueDate), gte(schema.workItems.dueDate, now), lte(schema.workItems.dueDate, soon))),
     db.select().from(schema.organizations).where(and(eq(schema.organizations.isClient, true), isNull(schema.organizations.deletedAt))),
     db.select().from(schema.fileEvents).orderBy(desc(schema.fileEvents.detectedAt)).limit(6),
     user
       ? db
           .select()
           .from(schema.workItems)
-          .where(and(eq(schema.workItems.assigneeId, user.id), isNull(schema.workItems.completedAt)))
-          .orderBy(desc(schema.workItems.dueDate))
+          .where(and(eq(schema.workItems.assigneeId, user.id), isNull(schema.workItems.completedAt), isNull(schema.workItems.deletedAt)))
+          // Most urgent first: earliest due date, with undated items pushed to the bottom.
+          .orderBy(sql`${schema.workItems.dueDate} is null`, asc(schema.workItems.dueDate))
           .limit(8)
       : Promise.resolve([]),
   ]);

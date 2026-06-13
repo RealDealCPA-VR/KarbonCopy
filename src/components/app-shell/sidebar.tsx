@@ -3,7 +3,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Briefcase, Users, Inbox, Clock, FolderOpen,
-  BellRing, BarChart3, Settings, ShieldCheck,
+  BellRing, BarChart3, Settings, ShieldCheck, Receipt, CalendarClock,
+  FileSignature, ScanLine, Activity, Sparkles, Plug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/db/schema";
@@ -11,12 +12,19 @@ import type { UserRole } from "@/db/schema";
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/work", label: "Work", icon: Briefcase },
+  { href: "/deadlines", label: "Deadlines", icon: CalendarClock },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/inbox", label: "Triage", icon: Inbox },
   { href: "/time", label: "Time & Budgets", icon: Clock },
+  { href: "/billing", label: "Billing", icon: Receipt },
   { href: "/documents", label: "Documents", icon: FolderOpen },
+  { href: "/signatures", label: "Signatures", icon: FileSignature },
+  { href: "/intake", label: "Intake", icon: ScanLine },
   { href: "/alerts", label: "File Alerts", icon: BellRing, badge: true },
   { href: "/insights", label: "Insights", icon: BarChart3 },
+  { href: "/anomalies", label: "Anomalies", icon: Activity },
+  { href: "/automate", label: "Automate", icon: Sparkles },
+  { href: "/integrations", label: "Integrations", icon: Plug },
 ] as const;
 
 export function Sidebar({ role }: { role: UserRole }) {

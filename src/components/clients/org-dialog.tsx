@@ -33,11 +33,17 @@ export function OrgDialog({
   onOpenChange,
   org,
   users,
+  canEditEin = true,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   org?: Organization | null;
   users: UserLite[];
+  /**
+   * Whether the current user may view/edit the cleartext EIN. When false the
+   * field is hidden and the EIN is left untouched on save (server preserves it).
+   */
+  canEditEin?: boolean;
 }) {
   const router = useRouter();
   const [pending, setPending] = React.useState(false);
@@ -59,6 +65,9 @@ export function OrgDialog({
     form.set("entityType", entityType);
     form.set("ownerId", ownerId === "none" ? "" : ownerId);
     if (editing && org) form.set("id", org.id);
+    // Signal whether the EIN field was present so the server can preserve the
+    // stored value for users who aren't allowed to edit it.
+    form.set("einEditable", canEditEin ? "1" : "0");
 
     setPending(true);
     const res = editing ? await updateOrganization(form) : await createOrganization(form);
@@ -129,10 +138,19 @@ export function OrgDialog({
               </Select>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="ein">EIN</Label>
-              <Input id="ein" name="ein" defaultValue={org?.ein ?? ""} placeholder="12-3456789" />
-            </div>
+            {canEditEin ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="ein">EIN</Label>
+                <Input id="ein" name="ein" defaultValue={org?.ein ?? ""} placeholder="12-3456789" />
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>EIN</Label>
+                <div className="flex h-9 items-center text-sm italic text-muted-foreground">
+                  Hidden — requires manager access
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="fiscalYearEnd">Fiscal year end</Label>

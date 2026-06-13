@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "@/db";
-import { requireUser } from "@/lib/auth";
+import { requireWrite, requireManager } from "@/lib/auth";
 import { removeStoredFile } from "@/app/api/documents/_storage";
 
 const { folders, documents, documentRequests, activities } = schema;
@@ -24,7 +24,7 @@ function clean(v: FormDataEntryValue | null): string | null {
 /* ------------------------------------------------------------------ */
 
 export async function createFolder(form: FormData): Promise<ActionResult<{ id: string }>> {
-  await requireUser();
+  await requireWrite();
   const name = clean(form.get("name"));
   if (!name) return { ok: false, error: "Folder name is required." };
   const organizationId = clean(form.get("organizationId"));
@@ -41,7 +41,7 @@ export async function createFolder(form: FormData): Promise<ActionResult<{ id: s
 }
 
 export async function renameFolder(form: FormData): Promise<ActionResult> {
-  await requireUser();
+  await requireWrite();
   const id = clean(form.get("id"));
   const name = clean(form.get("name"));
   if (!id || !name) return { ok: false, error: "Missing folder id or name." };
@@ -51,7 +51,7 @@ export async function renameFolder(form: FormData): Promise<ActionResult> {
 }
 
 export async function deleteFolder(form: FormData): Promise<ActionResult> {
-  await requireUser();
+  await requireManager();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing folder id." };
   // child folders/documents are detached via ON DELETE rules in the schema.
@@ -65,7 +65,7 @@ export async function deleteFolder(form: FormData): Promise<ActionResult> {
 /* ------------------------------------------------------------------ */
 
 export async function deleteDocument(form: FormData): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireManager();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing document id." };
 
@@ -88,7 +88,7 @@ export async function deleteDocument(form: FormData): Promise<ActionResult> {
 }
 
 export async function moveDocument(form: FormData): Promise<ActionResult> {
-  await requireUser();
+  await requireWrite();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing document id." };
   const folderId = clean(form.get("folderId"));
@@ -104,7 +104,7 @@ export async function moveDocument(form: FormData): Promise<ActionResult> {
 export async function createDocumentRequest(
   form: FormData,
 ): Promise<ActionResult<{ id: string; token: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const title = clean(form.get("title"));
   if (!title) return { ok: false, error: "A title is required." };
   const organizationId = clean(form.get("organizationId"));
@@ -169,7 +169,7 @@ export async function createDocumentRequest(
 }
 
 export async function deleteDocumentRequest(form: FormData): Promise<ActionResult> {
-  await requireUser();
+  await requireManager();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing request id." };
   await db.delete(documentRequests).where(eq(documentRequests.id, id));

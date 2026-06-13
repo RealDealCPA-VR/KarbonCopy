@@ -45,9 +45,6 @@ export default function LoginPage() {
               {pending ? "Signing in…" : "Sign in"}
             </Button>
           </form>
-          <p className="mt-4 text-center text-xs text-muted-foreground">
-            Default admin: <span className="font-mono">admin@firm.com</span> / <span className="font-mono">admin123</span>
-          </p>
         </CardContent>
       </Card>
     </div>

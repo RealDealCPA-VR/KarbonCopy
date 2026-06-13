@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, hasRole } from "@/lib/auth";
 import { absoluteStoragePath } from "../_storage";
 
 export const runtime = "nodejs";
@@ -23,6 +23,23 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     .limit(1);
 
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Authorize: managers+ can download anything; otherwise the requester must own
+  // the document (uploader) or own the client org it belongs to. This blocks the
+  // IDOR where any authenticated user (incl. read-only / other-client staff)
+  // could fetch ANY document by id.
+  let authorized = hasRole(user, "manager") || doc.uploadedById === user.id;
+  if (!authorized && doc.organizationId) {
+    const [org] = await db
+      .select({ ownerId: schema.organizations.ownerId })
+      .from(schema.organizations)
+      .where(eq(schema.organizations.id, doc.organizationId))
+      .limit(1);
+    if (org?.ownerId && org.ownerId === user.id) authorized = true;
+  }
+  if (!authorized) {
+    return NextResponse.json({ error: "You do not have access to this document." }, { status: 403 });
+  }
 
   // Only serve files we actually stored locally (skip UNC/file-server pointers).
   if (doc.storagePath.includes(":") || doc.storagePath.startsWith("\\\\")) {

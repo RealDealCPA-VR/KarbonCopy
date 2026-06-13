@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { requireUser } from "@/lib/auth";
+import { requireWrite } from "@/lib/auth";
 
 const { fileEvents, activities } = schema;
 
@@ -25,7 +25,7 @@ async function logActivity(actorId: string, verb: string, eventId: string, summa
 
 /** Acknowledge a single file event (or set it back to new). */
 export async function acknowledgeEvent(eventId: string): Promise<AlertActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const [row] = await db.select().from(fileEvents).where(eq(fileEvents.id, eventId)).limit(1);
   if (!row) return { ok: false, error: "Alert not found" };
 
@@ -45,7 +45,7 @@ export async function acknowledgeEvent(eventId: string): Promise<AlertActionResu
 
 /** Dismiss a single file event. */
 export async function dismissEvent(eventId: string): Promise<AlertActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const [row] = await db.select().from(fileEvents).where(eq(fileEvents.id, eventId)).limit(1);
   if (!row) return { ok: false, error: "Alert not found" };
 
@@ -65,7 +65,7 @@ export async function dismissEvent(eventId: string): Promise<AlertActionResult> 
 
 /** Restore a dismissed/acknowledged event back to "new". */
 export async function restoreEvent(eventId: string): Promise<AlertActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   await db
     .update(fileEvents)
     .set({ status: "new", acknowledgedById: null, acknowledgedAt: null })
@@ -76,7 +76,7 @@ export async function restoreEvent(eventId: string): Promise<AlertActionResult> 
 
 /** Bulk acknowledge every currently-new alert. */
 export async function acknowledgeAllNew(): Promise<AlertActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const rows = await db
     .select({ id: fileEvents.id })
     .from(fileEvents)

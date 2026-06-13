@@ -370,6 +370,9 @@ export const messages = sqliteTable(
     body: text("body").notNull(),
     direction: text("direction").$type<"inbound" | "outbound" | "note">().notNull().default("inbound"),
     sentById: text("sent_by_id").references(() => users.id),
+    // External email correlation (IMAP/Graph) — null for internal notes.
+    externalId: text("external_id"),
+    accountId: text("account_id"),
     createdAt: createdAt(),
   },
   (t) => ({ threadIdx: index("messages_thread_idx").on(t.threadId) }),
@@ -380,7 +383,8 @@ export const messages = sqliteTable(
 /* ------------------------------------------------------------------ */
 
 export type EntityKind =
-  | "work_item" | "organization" | "contact" | "thread" | "document" | "time_entry";
+  | "work_item" | "organization" | "contact" | "thread" | "document" | "time_entry"
+  | "invoice" | "payment" | "deadline" | "anomaly" | "signature_request" | "setting";
 
 export const comments = sqliteTable(
   "comments",
@@ -398,7 +402,8 @@ export const comments = sqliteTable(
 );
 
 export type NotificationType =
-  | "mention" | "assignment" | "file_alert" | "due_soon" | "comment" | "automator" | "system";
+  | "mention" | "assignment" | "file_alert" | "due_soon" | "comment" | "automator" | "system"
+  | "invoice" | "payment" | "portal" | "signature" | "deadline" | "anomaly";
 
 export const notifications = sqliteTable(
   "notifications",
@@ -540,6 +545,271 @@ export const settings = sqliteTable("settings", {
   updatedAt: updatedAt(),
 });
 
+/* ================================================================== */
+/* PHASE 1/2 — revenue, client-facing, compliance, integrations, AI   */
+/* (frozen contract; feature agents build against these)              */
+/* ================================================================== */
+
+/* ---- Billing: invoices, lines, payments -------------------------- */
+
+export type InvoiceStatus = "draft" | "sent" | "partial" | "paid" | "void" | "overdue";
+
+export const invoices = sqliteTable(
+  "invoices",
+  {
+    id: id(),
+    number: text("number").notNull(), // human invoice no., e.g. INV-2026-0001
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "set null" }),
+    contactId: text("contact_id").references(() => contacts.id, { onDelete: "set null" }),
+    status: text("status").$type<InvoiceStatus>().notNull().default("draft"),
+    issueDate: integer("issue_date", { mode: "timestamp_ms" }),
+    dueDate: integer("due_date", { mode: "timestamp_ms" }),
+    subtotalCents: integer("subtotal_cents").notNull().default(0),
+    taxCents: integer("tax_cents").notNull().default(0),
+    discountCents: integer("discount_cents").notNull().default(0),
+    totalCents: integer("total_cents").notNull().default(0),
+    amountPaidCents: integer("amount_paid_cents").notNull().default(0),
+    currency: text("currency").notNull().default("USD"),
+    notes: text("notes"),
+    terms: text("terms"),
+    // public payment link token (client pays via the relay/portal)
+    payToken: text("pay_token"),
+    sentAt: integer("sent_at", { mode: "timestamp_ms" }),
+    paidAt: integer("paid_at", { mode: "timestamp_ms" }),
+    createdById: text("created_by_id").references(() => users.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    orgIdx: index("invoices_org_idx").on(t.organizationId),
+    statusIdx: index("invoices_status_idx").on(t.status),
+    numberIdx: uniqueIndex("invoices_number_idx").on(t.number),
+  }),
+);
+
+export const invoiceLines = sqliteTable(
+  "invoice_lines",
+  {
+    id: id(),
+    invoiceId: text("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+    description: text("description").notNull(),
+    quantity: real("quantity").notNull().default(1),
+    unitCents: integer("unit_cents").notNull().default(0),
+    amountCents: integer("amount_cents").notNull().default(0),
+    workItemId: text("work_item_id").references(() => workItems.id, { onDelete: "set null" }),
+    // time entries rolled into this line (for invoice-from-WIP)
+    timeEntryIds: text("time_entry_ids", { mode: "json" }).$type<string[]>(),
+    position: integer("position").notNull().default(0),
+  },
+  (t) => ({ invoiceIdx: index("invoice_lines_invoice_idx").on(t.invoiceId) }),
+);
+
+export type PaymentMethod = "card" | "ach" | "check" | "cash" | "wire" | "manual";
+
+export const payments = sqliteTable(
+  "payments",
+  {
+    id: id(),
+    invoiceId: text("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "set null" }),
+    amountCents: integer("amount_cents").notNull(),
+    method: text("method").$type<PaymentMethod>().notNull().default("manual"),
+    reference: text("reference"),
+    processor: text("processor").$type<"stripe" | "manual" | "other">().notNull().default("manual"),
+    processorRef: text("processor_ref"), // stripe payment_intent id, etc.
+    receivedAt: integer("received_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    createdById: text("created_by_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => ({ invoiceIdx: index("payments_invoice_idx").on(t.invoiceId) }),
+);
+
+/* ---- Authenticated client portal -------------------------------- */
+
+export const portalUsers = sqliteTable(
+  "portal_users",
+  {
+    id: id(),
+    contactId: text("contact_id").notNull().references(() => contacts.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    passwordHash: text("password_hash"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    lastLoginAt: integer("last_login_at", { mode: "timestamp_ms" }),
+    // one-time login / set-password token
+    inviteToken: text("invite_token"),
+    inviteExpiresAt: integer("invite_expires_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    emailIdx: uniqueIndex("portal_users_email_idx").on(t.email),
+    contactIdx: index("portal_users_contact_idx").on(t.contactId),
+  }),
+);
+
+export const portalSessions = sqliteTable("portal_sessions", {
+  id: id(),
+  portalUserId: text("portal_user_id").notNull().references(() => portalUsers.id, { onDelete: "cascade" }),
+  token: text("token").notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  createdAt: createdAt(),
+});
+
+/* ---- E-signature (offline LAN, 8879 / engagement letters) -------- */
+
+export type SignatureStatus = "draft" | "sent" | "viewed" | "signed" | "declined" | "expired";
+
+export const signatureRequests = sqliteTable(
+  "signature_requests",
+  {
+    id: id(),
+    title: text("title").notNull(),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "set null" }),
+    contactId: text("contact_id").references(() => contacts.id, { onDelete: "set null" }),
+    documentId: text("document_id").references(() => documents.id, { onDelete: "set null" }),
+    workItemId: text("work_item_id").references(() => workItems.id, { onDelete: "set null" }),
+    status: text("status").$type<SignatureStatus>().notNull().default("draft"),
+    magicToken: text("magic_token").notNull(),
+    message: text("message"),
+    // JSON array of signature/initial/date field placements
+    fields: text("fields", { mode: "json" }).$type<Array<Record<string, unknown>>>(),
+    // path to the signed/stamped output PDF
+    signedDocumentPath: text("signed_document_path"),
+    signerName: text("signer_name"),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    createdById: text("created_by_id").references(() => users.id),
+    signedAt: integer("signed_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+  },
+  (t) => ({ tokenIdx: uniqueIndex("sig_token_idx").on(t.magicToken) }),
+);
+
+export const signatureEvents = sqliteTable(
+  "signature_events",
+  {
+    id: id(),
+    requestId: text("request_id").notNull().references(() => signatureRequests.id, { onDelete: "cascade" }),
+    type: text("type").$type<"created" | "sent" | "viewed" | "signed" | "declined">().notNull(),
+    actorName: text("actor_name"),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    // tamper-evident: sha256 of (prevHash + payload)
+    hash: text("hash"),
+    meta: text("meta", { mode: "json" }).$type<Record<string, unknown>>(),
+    createdAt: createdAt(),
+  },
+  (t) => ({ reqIdx: index("sig_events_req_idx").on(t.requestId) }),
+);
+
+/* ---- Compliance / tax-deadline calendar -------------------------- */
+
+export type DeadlineStatus = "upcoming" | "in_progress" | "filed" | "extended" | "missed" | "na";
+
+export const complianceDeadlines = sqliteTable(
+  "compliance_deadlines",
+  {
+    id: id(),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(), // "2024 Form 1120S"
+    jurisdiction: text("jurisdiction").notNull().default("federal"), // federal / state code
+    form: text("form"), // 1040, 1120S, 1065, 941...
+    taxPeriod: text("tax_period"), // "2024"
+    dueDate: integer("due_date", { mode: "timestamp_ms" }).notNull(),
+    extendedDueDate: integer("extended_due_date", { mode: "timestamp_ms" }),
+    status: text("status").$type<DeadlineStatus>().notNull().default("upcoming"),
+    workItemId: text("work_item_id").references(() => workItems.id, { onDelete: "set null" }),
+    ruleKey: text("rule_key"), // links back to the bundled rule that generated it
+    autoGenerated: integer("auto_generated", { mode: "boolean" }).notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    dueIdx: index("deadlines_due_idx").on(t.dueDate),
+    orgIdx: index("deadlines_org_idx").on(t.organizationId),
+  }),
+);
+
+/* ---- Real email (firm mailboxes) -------------------------------- */
+
+export const emailAccounts = sqliteTable("email_accounts", {
+  id: id(),
+  label: text("label").notNull(),
+  address: text("address").notNull(),
+  provider: text("provider").$type<"smtp_imap" | "gmail" | "graph">().notNull().default("smtp_imap"),
+  // encrypted JSON (host/port/user/pass or oauth tokens) via lib/crypto
+  configEnc: text("config_enc"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  lastSyncAt: integer("last_sync_at", { mode: "timestamp_ms" }),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+});
+
+/* ---- On-prem document understanding (OCR/classify/extract) ------- */
+
+export type ExtractionStatus = "pending" | "processing" | "processed" | "failed" | "matched";
+
+export const documentExtractions = sqliteTable(
+  "document_extractions",
+  {
+    id: id(),
+    documentId: text("document_id").references(() => documents.id, { onDelete: "set null" }),
+    fileEventId: text("file_event_id").references(() => fileEvents.id, { onDelete: "set null" }),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "set null" }),
+    sourcePath: text("source_path").notNull(),
+    docType: text("doc_type"), // w2, 1099, k1, bank_stmt, 8879, id, unknown
+    confidence: real("confidence"),
+    extractedFields: text("extracted_fields", { mode: "json" }).$type<Record<string, unknown>>(),
+    ocrText: text("ocr_text"),
+    status: text("status").$type<ExtractionStatus>().notNull().default("pending"),
+    matchedRequestId: text("matched_request_id").references(() => documentRequests.id, { onDelete: "set null" }),
+    matchedWorkItemId: text("matched_work_item_id").references(() => workItems.id, { onDelete: "set null" }),
+    engine: text("engine"), // tesseract / claude / etc.
+    error: text("error"),
+    createdAt: createdAt(),
+    processedAt: integer("processed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({ statusIdx: index("extractions_status_idx").on(t.status) }),
+);
+
+/* ---- Books-health anomaly radar --------------------------------- */
+
+export type AnomalyStatus = "open" | "reviewed" | "dismissed";
+
+export const anomalies = sqliteTable(
+  "anomalies",
+  {
+    id: id(),
+    organizationId: text("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+    source: text("source").$type<"quickbooks" | "statement" | "manual">().notNull().default("quickbooks"),
+    kind: text("kind").notNull(), // duplicate_payment, round_dollar, backdated, uncategorized_spike, reconciliation_drift
+    severity: text("severity").$type<"info" | "warning" | "critical">().notNull().default("warning"),
+    title: text("title").notNull(),
+    detail: text("detail"),
+    amountCents: integer("amount_cents"),
+    status: text("status").$type<AnomalyStatus>().notNull().default("open"),
+    detectedAt: integer("detected_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    reviewedById: text("reviewed_by_id").references(() => users.id),
+    meta: text("meta", { mode: "json" }).$type<Record<string, unknown>>(),
+  },
+  (t) => ({
+    orgIdx: index("anomalies_org_idx").on(t.organizationId),
+    statusIdx: index("anomalies_status_idx").on(t.status),
+  }),
+);
+
+/* ---- Integrations (QuickBooks Desktop / Lacerte via MCP) --------- */
+
+export const integrationConfigs = sqliteTable("integration_configs", {
+  id: id(),
+  kind: text("kind").$type<"quickbooks_desktop" | "quickbooks_online" | "lacerte" | "drake" | "ultratax">().notNull(),
+  label: text("label").notNull(),
+  // JSON: MCP server endpoint/command, watched folder paths, mapping config
+  config: text("config", { mode: "json" }).$type<Record<string, unknown>>(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  status: text("status").$type<"ok" | "error" | "unconfigured">().notNull().default("unconfigured"),
+  lastSyncAt: integer("last_sync_at", { mode: "timestamp_ms" }),
+  lastError: text("last_error"),
+  createdAt: createdAt(),
+});
+
 /* ------------------------------------------------------------------ */
 /* Type exports for the app layer                                      */
 /* ------------------------------------------------------------------ */
@@ -565,3 +835,16 @@ export type FileRule = typeof fileRules.$inferSelect;
 export type FileEvent = typeof fileEvents.$inferSelect;
 export type Automator = typeof automators.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
+export type Invoice = typeof invoices.$inferSelect;
+export type NewInvoice = typeof invoices.$inferInsert;
+export type InvoiceLine = typeof invoiceLines.$inferSelect;
+export type Payment = typeof payments.$inferSelect;
+export type PortalUser = typeof portalUsers.$inferSelect;
+export type PortalSession = typeof portalSessions.$inferSelect;
+export type SignatureRequest = typeof signatureRequests.$inferSelect;
+export type SignatureEvent = typeof signatureEvents.$inferSelect;
+export type ComplianceDeadline = typeof complianceDeadlines.$inferSelect;
+export type EmailAccount = typeof emailAccounts.$inferSelect;
+export type DocumentExtraction = typeof documentExtractions.$inferSelect;
+export type Anomaly = typeof anomalies.$inferSelect;
+export type IntegrationConfig = typeof integrationConfigs.$inferSelect;

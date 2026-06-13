@@ -1,16 +1,35 @@
 import "server-only";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
 import type { BoardData, WorkItemRow, WorkUser, WorkOrg, WorkTypeLite } from "@/components/work/types";
 
 /** Load everything the board/list/calendar views need in one pass. */
 export async function loadBoardData(): Promise<BoardData> {
-  const [statuses, rawItems, users, orgs, workTypes] = await Promise.all([
-    db.select().from(schema.workStatuses).orderBy(asc(schema.workStatuses.position)),
+  // Statuses load first so we know which ones are in the "done" category. Items
+  // in a done column must stay on the board (their completedAt is set), so we
+  // include any item that is either not completed OR sits in a done status.
+  const statuses = await db
+    .select()
+    .from(schema.workStatuses)
+    .orderBy(asc(schema.workStatuses.position));
+
+  const doneStatusIds = statuses.filter((s) => s.category === "done").map((s) => s.id);
+
+  const [rawItems, users, orgs, workTypes] = await Promise.all([
     db
       .select()
       .from(schema.workItems)
-      .where(and(isNull(schema.workItems.deletedAt), isNull(schema.workItems.completedAt))),
+      .where(
+        and(
+          isNull(schema.workItems.deletedAt),
+          doneStatusIds.length
+            ? or(
+                isNull(schema.workItems.completedAt),
+                inArray(schema.workItems.statusId, doneStatusIds),
+              )
+            : isNull(schema.workItems.completedAt),
+        ),
+      ),
     db
       .select({
         id: schema.users.id,

@@ -3,10 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { requireUser, hasRole } from "@/lib/auth";
+import { requireUser, requireWrite, hasRole } from "@/lib/auth";
 import { emitToUser } from "@/server/realtime";
 
-const { timeEntries, workItems, activities } = schema;
+const { timeEntries, workItems, activities, notifications } = schema;
 
 // NOTE: a "use server" file may only export async functions, so the shared
 // default rate constant lives in page.tsx / components, not here.
@@ -92,7 +92,7 @@ async function orgForWorkItem(workItemId: string | null): Promise<string | null>
  * (only one running timer per user), then inserts a new running entry.
  */
 export async function startTimer(form: FormData): Promise<ActionResult<{ id: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const workItemId = clean(form.get("workItemId"));
   const description = clean(form.get("description"));
   const billable = form.get("billable") == null ? true : toBool(form.get("billable"));
@@ -126,7 +126,7 @@ export async function startTimer(form: FormData): Promise<ActionResult<{ id: str
 
 /** Persist & stop the user's running timer, computing elapsed minutes. */
 export async function stopTimer(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const now = new Date();
   const [entry] = await db
     .select()
@@ -159,7 +159,7 @@ export async function stopTimer(id: string): Promise<ActionResult> {
 
 /** Discard a running timer entirely (no time saved). */
 export async function cancelTimer(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   await db
     .delete(timeEntries)
     .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), eq(timeEntries.running, true)));
@@ -194,7 +194,7 @@ function formatMins(mins: number): string {
 
 /** Create or update a manual time entry for the current user. */
 export async function upsertTimeEntry(form: FormData): Promise<ActionResult<{ id: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const id = clean(form.get("id"));
   const workItemId = clean(form.get("workItemId"));
   const description = clean(form.get("description"));
@@ -251,7 +251,7 @@ export async function upsertTimeEntry(form: FormData): Promise<ActionResult<{ id
 
 /** Delete one of the current user's time entries. */
 export async function deleteTimeEntry(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const deleted = await db
     .delete(timeEntries)
     .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), ne(timeEntries.running, true)))
@@ -289,7 +289,17 @@ export async function approveTimeEntries(ids: string[]): Promise<ActionResult<{ 
   }
   for (const [uid, count] of byUser) {
     if (uid === user.id) continue;
-    emitToUser(uid, "notification", { type: "system", scope: "time_approved", count });
+    const [notif] = await db
+      .insert(notifications)
+      .values({
+        userId: uid,
+        type: "system",
+        title: "Time approved",
+        body: `${count} time ${count === 1 ? "entry was" : "entries were"} approved`,
+        entityKind: "time_entry",
+      })
+      .returning();
+    emitToUser(uid, "notification", notif);
   }
 
   revalidate();

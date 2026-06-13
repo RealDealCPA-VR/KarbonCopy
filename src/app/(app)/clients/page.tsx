@@ -52,6 +52,9 @@ export default async function ClientsPage({
     const owner = o.ownerId ? userMap.get(o.ownerId) : undefined;
     return {
       ...o,
+      // Never ship the EIN (encrypted or otherwise) in the list payload — it is
+      // not displayed here and must not reach the client.
+      ein: null,
       ownerName: owner?.name ?? null,
       ownerImage: owner?.image ?? null,
       ownerColor: owner?.color ?? null,

@@ -7,12 +7,14 @@ import {
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { db, schema } from "@/db";
+import { requireUser, hasRole } from "@/lib/auth";
+import { decryptField, maskTaxId } from "@/lib/crypto";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { colorForId } from "@/lib/utils";
 import {
-  entityTypeLabel, maskEin, formatFiscalYearEnd,
+  entityTypeLabel, formatFiscalYearEnd,
 } from "@/components/clients/entity-types";
 import { UserAvatar } from "@/components/clients/user-avatar";
 import { DetailTabs } from "@/components/clients/detail-tabs";
@@ -31,13 +33,26 @@ export default async function ClientDetailPage({
 }) {
   const { id } = await params;
 
-  const [org] = await db
+  const currentUser = await requireUser();
+
+  const [orgRow] = await db
     .select()
     .from(schema.organizations)
     .where(and(eq(schema.organizations.id, id), isNull(schema.organizations.deletedAt)))
     .limit(1);
 
-  if (!org) notFound();
+  if (!orgRow) notFound();
+
+  // EIN is encrypted at rest. Decrypt server-side, then expose to the client only
+  // as a mask by default. Cleartext is provided ONLY to managers and ONLY where
+  // editing requires it (the Edit dialog / Overview), never in any list payload.
+  const einPlain = decryptField(orgRow.ein);
+  const einMasked = maskTaxId(einPlain);
+  const canViewEin = hasRole(currentUser, "manager");
+
+  // The org object handed to client components carries cleartext EIN only for
+  // managers (so the Edit dialog can pre-fill it); everyone else gets null.
+  const org = { ...orgRow, ein: canViewEin ? einPlain : null };
 
   const [
     users,
@@ -173,7 +188,7 @@ export default async function ClientDetailPage({
             </div>
           </div>
         </div>
-        <DetailHeaderActions org={org} users={users.map((u) => ({ id: u.id, name: u.name }))} />
+        <DetailHeaderActions org={org} canEditEin={canViewEin} users={users.map((u) => ({ id: u.id, name: u.name }))} />
       </div>
 
       {/* Quick stats */}
@@ -200,7 +215,7 @@ export default async function ClientDetailPage({
           documents: documents.length,
           notes: notes.length,
         }}
-        overview={<OverviewTab org={org} customFields={customFields} />}
+        overview={<OverviewTab org={org} einMasked={einMasked} customFields={customFields} />}
         contacts={<ContactsTab organizationId={org.id} contacts={contacts} />}
         work={<WorkTab workItems={workItems} statusMap={statusMap} userMap={userMap} />}
         documents={<DocumentsTab documents={documents} userMap={userMap} />}
@@ -217,9 +232,11 @@ export default async function ClientDetailPage({
 
 function OverviewTab({
   org,
+  einMasked,
   customFields,
 }: {
   org: Organization;
+  einMasked: string;
   customFields: CustomFieldDef[];
 }) {
   const rows: { icon: typeof Mail; label: string; node: React.ReactNode }[] = [];
@@ -248,7 +265,7 @@ function OverviewTab({
         <CardContent className="space-y-4">
           <dl className="grid gap-4 sm:grid-cols-2">
             <Field label="Entity type" value={entityTypeLabel(org.entityType)} />
-            <Field label="EIN" value={org.ein ? maskEin(org.ein) : "—"} mono />
+            <Field label="EIN" value={einMasked} mono />
             <Field label="Fiscal year end" value={formatFiscalYearEnd(org.fiscalYearEnd)} />
             <Field
               label="Status"

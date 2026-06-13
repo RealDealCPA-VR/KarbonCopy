@@ -4,16 +4,16 @@
  */
 import "server-only";
 import { cookies } from "next/headers";
-import { eq, and, gt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { nanoid } from "nanoid";
 import type { User, UserRole } from "@/db/schema";
+import { validateSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 export { hashPassword, verifyPassword } from "@/lib/password";
-import { verifyPassword } from "@/lib/password";
 
 const { users, sessions } = schema;
-const COOKIE = "kc_session";
+const COOKIE = SESSION_COOKIE;
 const SESSION_DAYS = 30;
 
 export async function createSession(userId: string) {
@@ -39,15 +39,7 @@ export async function destroySession() {
 
 export async function getCurrentUser(): Promise<User | null> {
   const jar = await cookies();
-  const token = jar.get(COOKIE)?.value;
-  if (!token) return null;
-  const rows = await db
-    .select()
-    .from(sessions)
-    .innerJoin(users, eq(sessions.userId, users.id))
-    .where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date())))
-    .limit(1);
-  return rows[0]?.users ?? null;
+  return validateSessionToken(jar.get(COOKIE)?.value);
 }
 
 export async function requireUser(): Promise<User> {
@@ -59,4 +51,26 @@ export async function requireUser(): Promise<User> {
 const RANK: Record<UserRole, number> = { readonly: 0, staff: 1, manager: 2, admin: 3, owner: 4 };
 export function hasRole(user: User, min: UserRole): boolean {
   return RANK[user.role] >= RANK[min];
+}
+
+/**
+ * Authorize the current user to at least `min`. Throws FORBIDDEN otherwise.
+ * Use in every mutating server action / privileged API route.
+ */
+export async function requireRole(min: UserRole): Promise<User> {
+  const user = await requireUser();
+  if (!hasRole(user, min)) throw new Error("FORBIDDEN");
+  return user;
+}
+
+/** Any write/create/update — blocks read-only users. */
+export const requireWrite = () => requireRole("staff");
+/** Destructive (delete/archive) or sensitive ops. */
+export const requireManager = () => requireRole("manager");
+/** Admin/owner-only (settings, users, automators). */
+export const requireAdmin = () => requireRole("admin");
+
+/** Invalidate all of a user's sessions (call on role/active/password change). */
+export async function invalidateUserSessions(userId: string): Promise<void> {
+  await db.delete(sessions).where(eq(sessions.userId, userId));
 }

@@ -6,11 +6,14 @@ dist
 *.tsbuildinfo
 next-env.d.ts
 
-# data / db
+# data / db (includes data/backups)
 data/
 *.db
 *.db-shm
 *.db-wal
+
+# logs (PM2/NSSM service output + backup.log)
+logs/
 
 # env
 .env

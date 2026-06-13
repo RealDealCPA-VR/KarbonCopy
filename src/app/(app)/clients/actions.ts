@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { and, eq, ne } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { requireUser } from "@/lib/auth";
+import { requireWrite, requireManager } from "@/lib/auth";
+import { encryptField } from "@/lib/crypto";
 import { emitToUser } from "@/server/realtime";
 import type { EntityType } from "@/db/schema";
 
@@ -24,24 +25,6 @@ export type ActionResult<T = void> =
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-async function logActivity(opts: {
-  actorId: string;
-  verb: string;
-  entityKind: typeof schema.activities.$inferInsert.entityKind;
-  entityId: string;
-  summary: string;
-  meta?: Record<string, unknown>;
-}) {
-  await db.insert(activities).values({
-    actorId: opts.actorId,
-    verb: opts.verb,
-    entityKind: opts.entityKind,
-    entityId: opts.entityId,
-    summary: opts.summary,
-    meta: opts.meta,
-  });
-}
-
 function clean(v: FormDataEntryValue | null): string | null {
   if (v == null) return null;
   const s = String(v).trim();
@@ -53,56 +36,70 @@ function clean(v: FormDataEntryValue | null): string | null {
 /* ------------------------------------------------------------------ */
 
 export async function createOrganization(form: FormData): Promise<ActionResult<{ id: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const name = clean(form.get("name"));
   if (!name) return { ok: false, error: "Name is required." };
 
   const entityType = (clean(form.get("entityType")) ?? "c_corp") as EntityType;
   const ownerId = clean(form.get("ownerId"));
 
-  const [row] = await db
-    .insert(organizations)
-    .values({
-      name,
-      entityType,
-      ein: clean(form.get("ein")),
-      website: clean(form.get("website")),
-      phone: clean(form.get("phone")),
-      email: clean(form.get("email")),
-      address: clean(form.get("address")),
-      fiscalYearEnd: clean(form.get("fiscalYearEnd")),
-      notes: clean(form.get("notes")),
-      ownerId: ownerId,
-      isClient: true,
-    })
-    .returning({ id: organizations.id });
+  // Insert org + activity (+ optional RM notification) atomically.
+  const { id, notification } = db.transaction((tx) => {
+    const [row] = tx
+      .insert(organizations)
+      .values({
+        name,
+        entityType,
+        ein: encryptField(clean(form.get("ein"))),
+        website: clean(form.get("website")),
+        phone: clean(form.get("phone")),
+        email: clean(form.get("email")),
+        address: clean(form.get("address")),
+        fiscalYearEnd: clean(form.get("fiscalYearEnd")),
+        notes: clean(form.get("notes")),
+        ownerId: ownerId,
+        isClient: true,
+      })
+      .returning({ id: organizations.id })
+      .all();
 
-  await logActivity({
-    actorId: user.id,
-    verb: "created",
-    entityKind: "organization",
-    entityId: row.id,
-    summary: `${user.name} created client ${name}`,
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "created",
+        entityKind: "organization",
+        entityId: row.id,
+        summary: `${user.name} created client ${name}`,
+      })
+      .run();
+
+    let notification: typeof schema.notifications.$inferSelect | undefined;
+    if (ownerId && ownerId !== user.id) {
+      [notification] = tx
+        .insert(notifications)
+        .values({
+          userId: ownerId,
+          type: "assignment",
+          title: "You're now a relationship manager",
+          body: `You were assigned as RM for ${name}.`,
+          entityKind: "organization",
+          entityId: row.id,
+        })
+        .returning()
+        .all();
+    }
+
+    return { id: row.id, notification };
   });
 
-  if (ownerId && ownerId !== user.id) {
-    await db.insert(notifications).values({
-      userId: ownerId,
-      type: "assignment",
-      title: "You're now a relationship manager",
-      body: `You were assigned as RM for ${name}.`,
-      entityKind: "organization",
-      entityId: row.id,
-    });
-    emitToUser(ownerId, "notification", { entityKind: "organization", entityId: row.id });
-  }
+  if (notification) emitToUser(notification.userId, "notification", notification);
 
   revalidatePath("/clients");
-  return { ok: true, data: { id: row.id } };
+  return { ok: true, data: { id } };
 }
 
 export async function updateOrganization(form: FormData): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing organization id." };
   const name = clean(form.get("name"));
@@ -110,29 +107,38 @@ export async function updateOrganization(form: FormData): Promise<ActionResult> 
 
   const ownerId = clean(form.get("ownerId"));
 
-  await db
-    .update(organizations)
-    .set({
-      name,
-      entityType: (clean(form.get("entityType")) ?? "c_corp") as EntityType,
-      ein: clean(form.get("ein")),
-      website: clean(form.get("website")),
-      phone: clean(form.get("phone")),
-      email: clean(form.get("email")),
-      address: clean(form.get("address")),
-      fiscalYearEnd: clean(form.get("fiscalYearEnd")),
-      notes: clean(form.get("notes")),
-      ownerId,
-      updatedAt: new Date(),
-    })
-    .where(eq(organizations.id, id));
+  // Only managers' dialogs include the editable EIN field. When it wasn't
+  // editable (einEditable !== "1"), preserve the stored value rather than
+  // wiping it; otherwise re-encrypt the submitted cleartext.
+  const einEditable = form.get("einEditable") === "1";
 
-  await logActivity({
-    actorId: user.id,
-    verb: "updated",
-    entityKind: "organization",
-    entityId: id,
-    summary: `${user.name} updated ${name}`,
+  db.transaction((tx) => {
+    tx.update(organizations)
+      .set({
+        name,
+        entityType: (clean(form.get("entityType")) ?? "c_corp") as EntityType,
+        ...(einEditable ? { ein: encryptField(clean(form.get("ein"))) } : {}),
+        website: clean(form.get("website")),
+        phone: clean(form.get("phone")),
+        email: clean(form.get("email")),
+        address: clean(form.get("address")),
+        fiscalYearEnd: clean(form.get("fiscalYearEnd")),
+        notes: clean(form.get("notes")),
+        ownerId,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, id))
+      .run();
+
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "updated",
+        entityKind: "organization",
+        entityId: id,
+        summary: `${user.name} updated ${name}`,
+      })
+      .run();
   });
 
   revalidatePath("/clients");
@@ -141,20 +147,26 @@ export async function updateOrganization(form: FormData): Promise<ActionResult> 
 }
 
 export async function archiveOrganization(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const user = await requireManager();
   if (!id) return { ok: false, error: "Missing organization id." };
-  const [org] = await db
-    .update(organizations)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(organizations.id, id))
-    .returning({ name: organizations.name });
 
-  await logActivity({
-    actorId: user.id,
-    verb: "archived",
-    entityKind: "organization",
-    entityId: id,
-    summary: `${user.name} archived ${org?.name ?? "a client"}`,
+  db.transaction((tx) => {
+    const [org] = tx
+      .update(organizations)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(organizations.id, id))
+      .returning({ name: organizations.name })
+      .all();
+
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "archived",
+        entityKind: "organization",
+        entityId: id,
+        summary: `${user.name} archived ${org?.name ?? "a client"}`,
+      })
+      .run();
   });
 
   revalidatePath("/clients");
@@ -166,7 +178,7 @@ export async function archiveOrganization(id: string): Promise<ActionResult> {
 /* ------------------------------------------------------------------ */
 
 export async function upsertContact(form: FormData): Promise<ActionResult<{ id: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const id = clean(form.get("id"));
   const organizationId = clean(form.get("organizationId"));
   const firstName = clean(form.get("firstName"));
@@ -189,33 +201,40 @@ export async function upsertContact(form: FormData): Promise<ActionResult<{ id: 
     portalEnabled,
   };
 
-  let contactId: string;
-  if (id) {
-    await db
-      .update(contacts)
-      .set({ ...values, updatedAt: new Date() })
-      .where(eq(contacts.id, id));
-    contactId = id;
-  } else {
-    const [row] = await db.insert(contacts).values(values).returning({ id: contacts.id });
-    contactId = row.id;
-  }
+  // Upsert + demote-other-primaries + activity atomically (avoids two-primary races).
+  const contactId = db.transaction((tx) => {
+    let contactId: string;
+    if (id) {
+      tx.update(contacts)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(contacts.id, id))
+        .run();
+      contactId = id;
+    } else {
+      const [row] = tx.insert(contacts).values(values).returning({ id: contacts.id }).all();
+      contactId = row.id;
+    }
 
-  // Enforce single primary per org: demote every other contact.
-  if (isPrimary && organizationId) {
-    await db
-      .update(contacts)
-      .set({ isPrimary: false })
-      .where(and(eq(contacts.organizationId, organizationId), ne(contacts.id, contactId)));
-  }
+    // Enforce single primary per org: demote every other contact.
+    if (isPrimary && organizationId) {
+      tx.update(contacts)
+        .set({ isPrimary: false })
+        .where(and(eq(contacts.organizationId, organizationId), ne(contacts.id, contactId)))
+        .run();
+    }
 
-  await logActivity({
-    actorId: user.id,
-    verb: id ? "updated" : "created",
-    entityKind: "contact",
-    entityId: contactId,
-    summary: `${user.name} ${id ? "updated" : "added"} contact ${firstName} ${lastName}`,
-    meta: organizationId ? { organizationId } : undefined,
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: id ? "updated" : "created",
+        entityKind: "contact",
+        entityId: contactId,
+        summary: `${user.name} ${id ? "updated" : "added"} contact ${firstName} ${lastName}`,
+        meta: organizationId ? { organizationId } : undefined,
+      })
+      .run();
+
+    return contactId;
   });
 
   if (organizationId) revalidatePath(`/clients/${organizationId}`);
@@ -227,19 +246,27 @@ export async function toggleContactPortal(
   id: string,
   enabled: boolean,
 ): Promise<ActionResult> {
-  const user = await requireUser();
-  const [c] = await db
-    .update(contacts)
-    .set({ portalEnabled: enabled, updatedAt: new Date() })
-    .where(eq(contacts.id, id))
-    .returning({ organizationId: contacts.organizationId, firstName: contacts.firstName, lastName: contacts.lastName });
+  const user = await requireWrite();
 
-  await logActivity({
-    actorId: user.id,
-    verb: "updated",
-    entityKind: "contact",
-    entityId: id,
-    summary: `${user.name} ${enabled ? "enabled" : "disabled"} portal access for ${c?.firstName ?? ""} ${c?.lastName ?? ""}`.trim(),
+  const c = db.transaction((tx) => {
+    const [c] = tx
+      .update(contacts)
+      .set({ portalEnabled: enabled, updatedAt: new Date() })
+      .where(eq(contacts.id, id))
+      .returning({ organizationId: contacts.organizationId, firstName: contacts.firstName, lastName: contacts.lastName })
+      .all();
+
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "updated",
+        entityKind: "contact",
+        entityId: id,
+        summary: `${user.name} ${enabled ? "enabled" : "disabled"} portal access for ${c?.firstName ?? ""} ${c?.lastName ?? ""}`.trim(),
+      })
+      .run();
+
+    return c;
   });
 
   if (c?.organizationId) revalidatePath(`/clients/${c.organizationId}`);
@@ -248,19 +275,29 @@ export async function toggleContactPortal(
 }
 
 export async function deleteContact(id: string): Promise<ActionResult> {
-  const user = await requireUser();
-  const [c] = await db
-    .update(contacts)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(contacts.id, id))
-    .returning({ organizationId: contacts.organizationId });
-  await logActivity({
-    actorId: user.id,
-    verb: "archived",
-    entityKind: "contact",
-    entityId: id,
-    summary: `${user.name} removed a contact`,
+  const user = await requireManager();
+
+  const c = db.transaction((tx) => {
+    const [c] = tx
+      .update(contacts)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(contacts.id, id))
+      .returning({ organizationId: contacts.organizationId })
+      .all();
+
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "archived",
+        entityKind: "contact",
+        entityId: id,
+        summary: `${user.name} removed a contact`,
+      })
+      .run();
+
+    return c;
   });
+
   if (c?.organizationId) revalidatePath(`/clients/${c.organizationId}`);
   revalidatePath("/clients/people");
   return { ok: true };
@@ -271,7 +308,7 @@ export async function deleteContact(id: string): Promise<ActionResult> {
 /* ------------------------------------------------------------------ */
 
 export async function addComment(form: FormData): Promise<ActionResult<{ id: string }>> {
-  const user = await requireUser();
+  const user = await requireWrite();
   const organizationId = clean(form.get("organizationId"));
   const body = clean(form.get("body"));
   if (!organizationId) return { ok: false, error: "Missing organization id." };
@@ -297,45 +334,59 @@ export async function addComment(form: FormData): Promise<ActionResult<{ id: str
       .map((u) => u.id);
   }
 
-  const [row] = await db
-    .insert(comments)
-    .values({
-      entityKind: "organization",
-      entityId: organizationId,
-      authorId: user.id,
-      body,
-      mentions: mentionedIds.length ? mentionedIds : undefined,
-    })
-    .returning({ id: comments.id });
+  // Insert comment + activity + mention notifications atomically.
+  const { commentId, mentionNotifications } = db.transaction((tx) => {
+    const [row] = tx
+      .insert(comments)
+      .values({
+        entityKind: "organization",
+        entityId: organizationId,
+        authorId: user.id,
+        body,
+        mentions: mentionedIds.length ? mentionedIds : undefined,
+      })
+      .returning({ id: comments.id })
+      .all();
 
-  await logActivity({
-    actorId: user.id,
-    verb: "commented",
-    entityKind: "organization",
-    entityId: organizationId,
-    summary: `${user.name} added a note`,
-    meta: { commentId: row.id },
+    tx.insert(activities)
+      .values({
+        actorId: user.id,
+        verb: "commented",
+        entityKind: "organization",
+        entityId: organizationId,
+        summary: `${user.name} added a note`,
+        meta: { commentId: row.id },
+      })
+      .run();
+
+    const mentionNotifications: (typeof schema.notifications.$inferSelect)[] = [];
+    for (const uid of mentionedIds) {
+      if (uid === user.id) continue;
+      const [n] = tx
+        .insert(notifications)
+        .values({
+          userId: uid,
+          type: "mention",
+          title: `${user.name} mentioned you`,
+          body: body.slice(0, 140),
+          entityKind: "organization",
+          entityId: organizationId,
+        })
+        .returning()
+        .all();
+      mentionNotifications.push(n);
+    }
+
+    return { commentId: row.id, mentionNotifications };
   });
 
-  for (const uid of mentionedIds) {
-    if (uid === user.id) continue;
-    await db.insert(notifications).values({
-      userId: uid,
-      type: "mention",
-      title: `${user.name} mentioned you`,
-      body: body.slice(0, 140),
-      entityKind: "organization",
-      entityId: organizationId,
-    });
-    emitToUser(uid, "notification", {
-      type: "mention",
-      entityKind: "organization",
-      entityId: organizationId,
-    });
+  // Emit the FULL inserted notification row to each mentioned user.
+  for (const n of mentionNotifications) {
+    emitToUser(n.userId, "notification", n);
   }
 
   revalidatePath(`/clients/${organizationId}`);
-  return { ok: true, data: { id: row.id } };
+  return { ok: true, data: { id: commentId } };
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,7 +398,7 @@ export async function setCustomFieldValue(
   entityId: string,
   value: string | null,
 ): Promise<ActionResult> {
-  await requireUser();
+  await requireWrite();
   if (!fieldId || !entityId) return { ok: false, error: "Missing field or entity." };
 
   const existing = await db

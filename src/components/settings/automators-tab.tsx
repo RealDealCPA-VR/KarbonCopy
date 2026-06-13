@@ -32,22 +32,24 @@ import {
   updateAutomator,
 } from "@/app/(app)/settings/actions";
 
-const TRIGGERS: { value: AutomatorTrigger; label: string }[] = [
-  { value: "status_changed", label: "Status changed" },
-  { value: "work_created", label: "Work created" },
-  { value: "task_completed", label: "Task completed" },
-  { value: "due_approaching", label: "Due date approaching" },
-  { value: "file_event", label: "File-server event" },
-  { value: "all_tasks_done", label: "All tasks done" },
+// `available: false` = the rule engine does not implement this yet. These are shown
+// but disabled in the create dialog so admins can't create dead rules.
+const TRIGGERS: { value: AutomatorTrigger; label: string; available: boolean }[] = [
+  { value: "status_changed", label: "Status changed", available: true },
+  { value: "work_created", label: "Work created", available: false },
+  { value: "task_completed", label: "Task completed", available: false },
+  { value: "due_approaching", label: "Due date approaching", available: false },
+  { value: "file_event", label: "File-server event", available: false },
+  { value: "all_tasks_done", label: "All tasks done", available: false },
 ];
 
-const ACTIONS: { value: AutomatorAction; label: string }[] = [
-  { value: "set_status", label: "Set status" },
-  { value: "assign", label: "Assign" },
-  { value: "notify", label: "Notify" },
-  { value: "create_task", label: "Create task" },
-  { value: "send_email", label: "Send email" },
-  { value: "create_work", label: "Create work item" },
+const ACTIONS: { value: AutomatorAction; label: string; available: boolean }[] = [
+  { value: "set_status", label: "Set status", available: true },
+  { value: "assign", label: "Assign", available: true },
+  { value: "notify", label: "Notify", available: true },
+  { value: "create_task", label: "Create task", available: false },
+  { value: "send_email", label: "Send email", available: false },
+  { value: "create_work", label: "Create work item", available: false },
 ];
 
 const triggerLabel = (t: AutomatorTrigger) => TRIGGERS.find((x) => x.value === t)?.label ?? t;
@@ -151,14 +153,14 @@ export function AutomatorsTab({ automators: initial }: { automators: Automator[]
 function CreateAutomatorDialog({ onCreated }: { onCreated: (a: Automator) => void }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
-  const [trigger, setTrigger] = React.useState<AutomatorTrigger>("all_tasks_done");
+  const [trigger, setTrigger] = React.useState<AutomatorTrigger>("status_changed");
   const [action, setAction] = React.useState<AutomatorAction>("notify");
   const [enabled, setEnabled] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
 
   const reset = () => {
     setName("");
-    setTrigger("all_tasks_done");
+    setTrigger("status_changed");
     setAction("notify");
     setEnabled(true);
   };
@@ -225,8 +227,9 @@ function CreateAutomatorDialog({ onCreated }: { onCreated: (a: Automator) => voi
                 </SelectTrigger>
                 <SelectContent>
                   {TRIGGERS.map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
+                    <SelectItem key={t.value} value={t.value} disabled={!t.available}>
                       {t.label}
+                      {!t.available && " (coming soon)"}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -240,8 +243,9 @@ function CreateAutomatorDialog({ onCreated }: { onCreated: (a: Automator) => voi
                 </SelectTrigger>
                 <SelectContent>
                   {ACTIONS.map((a) => (
-                    <SelectItem key={a.value} value={a.value}>
+                    <SelectItem key={a.value} value={a.value} disabled={!a.available}>
                       {a.label}
+                      {!a.available && " (coming soon)"}
                     </SelectItem>
                   ))}
                 </SelectContent>

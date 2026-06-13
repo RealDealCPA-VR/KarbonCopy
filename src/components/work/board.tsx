@@ -29,8 +29,24 @@ export function Board({
   // Keep local state in sync when the server data changes.
   React.useEffect(() => setOptimistic(items), [items]);
 
-  // Live refresh when anyone changes work elsewhere.
-  useRealtimeEvent("work_updated", () => router.refresh());
+  // Live refresh when anyone changes work elsewhere. Firm-wide edits can fire a
+  // burst of "work_updated" events, and each refresh re-runs the full board
+  // query for every connected user. Debounce (trailing ~1500ms) and skip work
+  // when the tab is hidden — background tabs don't need to stay live.
+  const refreshTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => {
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, []);
+  useRealtimeEvent("work_updated", () => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      router.refresh();
+    }, 1500);
+  });
 
   const userById = React.useMemo(() => {
     const m = new Map<string, WorkUser>();

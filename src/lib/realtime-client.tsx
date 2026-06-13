@@ -37,7 +37,9 @@ export function RealtimeProvider({
   const [online, setOnline] = React.useState<Set<string>>(new Set());
 
   React.useEffect(() => {
-    const s = io({ path: "/socket.io", auth: { userId } });
+    // The server authenticates the socket from the kc_session cookie (sent
+    // automatically same-origin); we no longer trust a client-supplied userId.
+    const s = io({ path: "/socket.io", withCredentials: true });
     setSocket(s);
 
     s.on("presence", (p: { userId: string; online: boolean }) => {

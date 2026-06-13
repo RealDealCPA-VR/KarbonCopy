@@ -12,9 +12,11 @@ import type { Organization } from "@/db/schema";
 export function DetailHeaderActions({
   org,
   users,
+  canEditEin = false,
 }: {
   org: Organization;
   users: { id: string; name: string }[];
+  canEditEin?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = React.useState(false);
@@ -38,7 +40,7 @@ export function DetailHeaderActions({
       <Button variant="ghost" size="sm" onClick={onArchive} className="text-muted-foreground">
         <Archive className="h-4 w-4" /> Archive
       </Button>
-      <OrgDialog open={open} onOpenChange={setOpen} org={org} users={users} />
+      <OrgDialog open={open} onOpenChange={setOpen} org={org} users={users} canEditEin={canEditEin} />
     </div>
   );
 }

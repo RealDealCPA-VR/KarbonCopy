@@ -1,6 +1,6 @@
-import { desc, eq, isNull } from "drizzle-orm";
+import { desc, eq, isNull, or } from "drizzle-orm";
 import { db, schema } from "@/db";
-import { requireUser } from "@/lib/auth";
+import { requireUser, hasRole } from "@/lib/auth";
 import { DocumentsBrowser } from "@/components/documents/documents-browser";
 import type { DocRow, FolderLite, OrgLite } from "@/components/documents/types";
 
@@ -11,8 +11,18 @@ export default async function DocumentsPage({
 }: {
   searchParams: Promise<{ client?: string; folder?: string }>;
 }) {
-  await requireUser();
+  const user = await requireUser();
   const sp = await searchParams;
+
+  // Non-managers only see documents they uploaded or that belong to an org they
+  // own (relationship manager). Managers+ see everything. Mirrors the per-doc
+  // authorization on the download route so the list never shows undownloadable rows.
+  const docScope = hasRole(user, "manager")
+    ? undefined
+    : or(
+        eq(schema.documents.uploadedById, user.id),
+        eq(schema.organizations.ownerId, user.id),
+      );
 
   const [orgs, folderRows, docRows] = await Promise.all([
     db
@@ -51,6 +61,7 @@ export default async function DocumentsPage({
       .leftJoin(schema.organizations, eq(schema.documents.organizationId, schema.organizations.id))
       .leftJoin(schema.users, eq(schema.documents.uploadedById, schema.users.id))
       .leftJoin(schema.workItems, eq(schema.documents.workItemId, schema.workItems.id))
+      .where(docScope)
       .orderBy(desc(schema.documents.createdAt)),
   ]);
 
