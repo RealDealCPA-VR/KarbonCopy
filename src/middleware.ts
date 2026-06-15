@@ -8,6 +8,8 @@ import { NextResponse, type NextRequest } from "next/server";
 const PUBLIC = [
   "/login", "/portal", "/api/portal", "/api/webhooks", "/healthz",
   "/_next", "/favicon", "/api/socket",
+  // /api/v1 authenticates by API key (Bearer / X-API-Key), not the staff cookie.
+  "/api/v1",
 ];
 
 export function middleware(req: NextRequest) {

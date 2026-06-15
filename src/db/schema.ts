@@ -810,6 +810,33 @@ export const integrationConfigs = sqliteTable("integration_configs", {
   createdAt: createdAt(),
 });
 
+/* ---- API keys (programmatic / agent + MCP access) --------------- */
+
+export const apiKeys = sqliteTable(
+  "api_keys",
+  {
+    id: id(),
+    name: text("name").notNull(), // human label, e.g. "Claude Desktop"
+    // the key acts AS this user (inherits their role for RBAC)
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    // sha256(rawKey) — the raw key is shown once at creation, never stored
+    keyHash: text("key_hash").notNull(),
+    // first chars for display, e.g. "kc_live_ab12cd"
+    prefix: text("prefix").notNull(),
+    // optional fine-grained scopes; null = inherit the user's role
+    scopes: text("scopes", { mode: "json" }).$type<string[] | null>(),
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    revoked: integer("revoked", { mode: "boolean" }).notNull().default(false),
+    createdById: text("created_by_id").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    hashIdx: uniqueIndex("api_keys_hash_idx").on(t.keyHash),
+    userIdx: index("api_keys_user_idx").on(t.userId),
+  }),
+);
+
 /* ------------------------------------------------------------------ */
 /* Type exports for the app layer                                      */
 /* ------------------------------------------------------------------ */
@@ -848,3 +875,4 @@ export type EmailAccount = typeof emailAccounts.$inferSelect;
 export type DocumentExtraction = typeof documentExtractions.$inferSelect;
 export type Anomaly = typeof anomalies.$inferSelect;
 export type IntegrationConfig = typeof integrationConfigs.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;

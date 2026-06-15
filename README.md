@@ -85,6 +85,32 @@ All wrapped in a fast, modern, dark-mode UI (Next.js 15 + Tailwind + shadcn/21st
 
 ---
 
+## 🤖 Let Claude run your firm
+
+KarbonCopy ships a **first-class agent interface** — point Claude (Desktop, Code, or any MCP
+client) at it and *talk to your practice*: "create a client for Riverside Dental, set up their
+monthly bookkeeping job, and draft a $1,200 invoice." Two ways in, one shared, RBAC-enforced
+service layer:
+
+- 🔌 **Built-in MCP server** (`pnpm mcp`) — 22 tools (`create_client`, `create_work`, `log_time`,
+  `create_invoice`, `record_payment`, `create_deadline`, `search`, …). Add it to Claude in 30
+  seconds — see [`MCP.md`](./MCP.md).
+- 🌐 **`/api/v1` REST API** — key-authenticated CRUD over every entity, for scripts & automations.
+
+Mint a scoped key in **Settings → API Keys** (it acts *as* a chosen user, inherits their role, and
+is shown once). Same encryption, same permissions, same audit trail as a human — your data still
+never leaves the box. Full reference: [`API.md`](./API.md).
+
+```jsonc
+// Claude Desktop → claude_desktop_config.json
+{ "mcpServers": { "karboncopy": {
+  "command": "pnpm", "args": ["mcp"], "cwd": "C:\\path\\to\\KarbonCopy",
+  "env": { "KARBONCOPY_API_KEY": "kc_live_…", "APP_ENCRYPTION_KEY": "…" }
+}}}
+```
+
+---
+
 ## ⚡ Quick start
 
 ```bash

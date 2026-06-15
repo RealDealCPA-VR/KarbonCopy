@@ -48,10 +48,8 @@ export async function requireUser(): Promise<User> {
   return user;
 }
 
-const RANK: Record<UserRole, number> = { readonly: 0, staff: 1, manager: 2, admin: 3, owner: 4 };
-export function hasRole(user: User, min: UserRole): boolean {
-  return RANK[user.role] >= RANK[min];
-}
+export { hasRole } from "@/lib/rbac";
+import { hasRole } from "@/lib/rbac";
 
 /**
  * Authorize the current user to at least `min`. Throws FORBIDDEN otherwise.

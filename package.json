@@ -12,6 +12,7 @@
   },
   "scripts": {
     "dev": "tsx --tsconfig tsconfig.server.json server.ts",
+    "mcp": "tsx --tsconfig tsconfig.server.json src/mcp/server.ts",
     "dev:watch": "tsx watch --tsconfig tsconfig.server.json --ignore \"./.next/**\" --ignore \"./data/**\" server.ts",
     "build": "next build",
     "start": "cross-env NODE_ENV=production tsx --tsconfig tsconfig.server.json server.ts",

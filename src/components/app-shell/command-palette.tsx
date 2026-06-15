@@ -26,6 +26,7 @@ const PAGES = [
   { href: "/automate", label: "Automate", icon: Sparkles },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/settings/api-keys", label: "API Keys (Claude / MCP)", icon: Settings },
 ];
 
 const ACTIONS = [
