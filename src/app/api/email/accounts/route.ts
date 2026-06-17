@@ -20,15 +20,23 @@ async function guard() {
   try {
     await requireAdmin();
     return null;
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  } catch (e) {
+    const unauth = e instanceof Error && e.message === "UNAUTHENTICATED";
+    return NextResponse.json(
+      { error: unauth ? "Unauthorized" : "Forbidden" },
+      { status: unauth ? 401 : 403 },
+    );
   }
 }
 
 export async function GET() {
   const denied = await guard();
   if (denied) return denied;
-  return NextResponse.json({ accounts: await listSafeAccounts() });
+  try {
+    return NextResponse.json({ accounts: await listSafeAccounts() });
+  } catch {
+    return NextResponse.json({ error: "Failed to fetch email accounts." }, { status: 500 });
+  }
 }
 
 interface AccountBody {
@@ -76,13 +84,16 @@ export async function POST(req: Request) {
   if (!address) return NextResponse.json({ error: "Email address is required." }, { status: 400 });
 
   const config = buildConfig(body);
-  const account = await createAccount({
-    label,
-    address,
-    provider: "smtp_imap",
-    enabled: body.enabled ?? true,
-    config,
-  });
-
-  return NextResponse.json({ account: toSafeAccount(account) }, { status: 201 });
+  try {
+    const account = await createAccount({
+      label,
+      address,
+      provider: "smtp_imap",
+      enabled: body.enabled ?? true,
+      config,
+    });
+    return NextResponse.json({ account: toSafeAccount(account) }, { status: 201 });
+  } catch {
+    return NextResponse.json({ error: "Failed to create email account." }, { status: 500 });
+  }
 }

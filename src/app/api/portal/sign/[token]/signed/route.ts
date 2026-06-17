@@ -32,15 +32,21 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     );
   }
 
-  const [request] = await db
-    .select({
-      status: schema.signatureRequests.status,
-      title: schema.signatureRequests.title,
-      signedDocumentPath: schema.signatureRequests.signedDocumentPath,
-    })
-    .from(schema.signatureRequests)
-    .where(eq(schema.signatureRequests.magicToken, token))
-    .limit(1);
+  let request;
+  try {
+    [request] = await db
+      .select({
+        status: schema.signatureRequests.status,
+        title: schema.signatureRequests.title,
+        signedDocumentPath: schema.signatureRequests.signedDocumentPath,
+      })
+      .from(schema.signatureRequests)
+      .where(eq(schema.signatureRequests.magicToken, token))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/signed] request lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load document." }, { status: 500 });
+  }
 
   if (!request) return NextResponse.json({ error: "Not found." }, { status: 404 });
   if (request.status !== "signed" || !request.signedDocumentPath) {
@@ -56,7 +62,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
   }
 
   const safeTitle = (request.title || "document").replace(/[^\w.\-]+/g, "_").slice(0, 80);
-  const webStream = Readable.toWeb(createReadStream(abs)) as unknown as ReadableStream;
+  const nodeStream = createReadStream(abs);
+  nodeStream.on("error", (err) => console.error("[portal/signed] stream error on", abs, ":", err.message));
+  const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
   const headers = new Headers();
   headers.set("Content-Type", "application/pdf");
   if (size != null) headers.set("Content-Length", String(size));

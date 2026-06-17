@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db, schema } from "@/db";
 import { getCurrentUser, hasRole } from "@/lib/auth";
-import { storeUpload, UploadError, MAX_UPLOAD_BYTES } from "../_storage";
+import { storeUpload, UploadError, MAX_UPLOAD_BYTES, absoluteStoragePath } from "../_storage";
 import { checkRateLimit, clientIp } from "../_ratelimit";
 
 export const runtime = "nodejs";
@@ -64,33 +64,60 @@ export async function POST(req: NextRequest) {
     if (err instanceof UploadError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    throw err;
+    console.error("[upload] file storage failed:", (err as Error).message);
+    return NextResponse.json({ error: "File storage failed." }, { status: 500 });
   }
 
-  const [row] = await db
-    .insert(schema.documents)
-    .values({
-      id: stored.id,
-      name: stored.name,
-      storagePath: stored.storagePath,
-      mimeType: stored.mimeType,
-      sizeBytes: stored.sizeBytes,
-      folderId,
-      organizationId,
-      workItemId,
-      uploadedById: user.id,
-      source: "upload",
-    })
-    .returning();
+  let row;
+  try {
+    [row] = await db
+      .insert(schema.documents)
+      .values({
+        id: stored.id,
+        name: stored.name,
+        storagePath: stored.storagePath,
+        mimeType: stored.mimeType,
+        sizeBytes: stored.sizeBytes,
+        folderId,
+        organizationId,
+        workItemId,
+        uploadedById: user.id,
+        source: "upload",
+      })
+      .returning();
+  } catch (err) {
+    console.error("[upload] document insert failed:", (err as Error).message);
+    return NextResponse.json({ error: "Document creation failed" }, { status: 500 });
+  }
+  if (!row) {
+    return NextResponse.json({ error: "Document creation failed" }, { status: 500 });
+  }
 
-  await db.insert(schema.activities).values({
-    actorId: user.id,
-    verb: "uploaded",
-    entityKind: "document",
-    entityId: row.id,
-    summary: `${user.name} uploaded ${stored.name}`,
-    meta: { sizeBytes: stored.sizeBytes, organizationId },
-  });
+  try {
+    await db.insert(schema.activities).values({
+      actorId: user.id,
+      verb: "uploaded",
+      entityKind: "document",
+      entityId: row.id,
+      summary: `${user.name} uploaded ${stored.name}`,
+      meta: { sizeBytes: stored.sizeBytes, organizationId },
+    });
+  } catch {
+    /* activity log is best-effort */
+  }
+
+  // Kick off the on-prem OCR → classify → extract → auto-match pipeline so a
+  // manual upload enters the intake queue just like a watcher-detected file.
+  try {
+    const { processDocument } = await import("@/server/ocr");
+    void processDocument({
+      sourcePath: absoluteStoragePath(row.storagePath),
+      documentId: row.id,
+      organizationId: organizationId ?? null,
+    }).catch((e) => console.error("[upload] OCR pipeline error:", (e as Error).message));
+  } catch (e) {
+    console.error("[upload] failed to start OCR pipeline:", (e as Error).message);
+  }
 
   return NextResponse.json({ ok: true, document: row });
 }

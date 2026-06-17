@@ -13,8 +13,12 @@ export async function POST(req: Request) {
   let user;
   try {
     user = await requireWrite();
-  } catch {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  } catch (e) {
+    const unauth = e instanceof Error && e.message === "UNAUTHENTICATED";
+    return NextResponse.json(
+      { error: unauth ? "Unauthorized" : "Forbidden" },
+      { status: unauth ? 401 : 403 },
+    );
   }
 
   let body: {

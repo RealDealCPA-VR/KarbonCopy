@@ -7,7 +7,7 @@ import { and, asc, desc, eq, isNull, like } from "drizzle-orm";
 import { db, schema, type Actor, requireWrite, parse, logActivity, pagination } from "./_base";
 import { notFound, validation } from "@/lib/api/errors";
 
-const { workItems, workTasks, workTypes, workStatuses, organizations, users } = schema;
+const { workItems, workTasks, workTypes, workStatuses, organizations, users, contacts } = schema;
 
 /** Accept ISO string or epoch ms; coerce to a valid Date. */
 const dateCoerce = z
@@ -104,6 +104,10 @@ async function assertStatus(id: string) {
   const [r] = await db.select({ id: workStatuses.id }).from(workStatuses).where(eq(workStatuses.id, id)).limit(1);
   if (!r) throw validation(`Work status ${id} not found`);
 }
+async function assertContact(id: string) {
+  const [r] = await db.select({ id: contacts.id, deletedAt: contacts.deletedAt }).from(contacts).where(eq(contacts.id, id)).limit(1);
+  if (!r || r.deletedAt) throw validation(`Contact ${id} not found`);
+}
 
 export async function listWorkItems(actor: Actor, input: unknown = {}) {
   const { limit, offset, search, organizationId, assigneeId, statusId } = parse(listInput, input);
@@ -134,6 +138,7 @@ export async function createWorkItem(actor: Actor, input: unknown) {
   requireWrite(actor);
   const data = parse(createInput, input);
   if (data.organizationId) await assertOrg(data.organizationId);
+  if (data.contactId) await assertContact(data.contactId);
   if (data.assigneeId) await assertUser(data.assigneeId);
   if (data.workTypeId) await assertWorkType(data.workTypeId);
   if (data.statusId) await assertStatus(data.statusId);
@@ -153,6 +158,7 @@ export async function createWorkItem(actor: Actor, input: unknown) {
       budgetMinutes: data.budgetMinutes ?? null,
     })
     .returning();
+  if (!row) throw notFound("Work item");
   await logActivity({
     actorId: actor.id, verb: "created", entityKind: "work_item", entityId: row.id,
     summary: `${actor.name} created work item ${row.title} (via API)`,
@@ -166,6 +172,7 @@ export async function updateWorkItem(actor: Actor, id: string, input: unknown) {
   const [existing] = await db.select().from(workItems).where(eq(workItems.id, id)).limit(1);
   if (!existing || existing.deletedAt) throw notFound("Work item");
   if (data.organizationId) await assertOrg(data.organizationId);
+  if (data.contactId) await assertContact(data.contactId);
   if (data.assigneeId) await assertUser(data.assigneeId);
   if (data.workTypeId) await assertWorkType(data.workTypeId);
   if (data.statusId) await assertStatus(data.statusId);
@@ -174,6 +181,7 @@ export async function updateWorkItem(actor: Actor, id: string, input: unknown) {
     if (data[k] !== undefined) patch[k] = data[k];
   }
   const [row] = await db.update(workItems).set(patch).where(eq(workItems.id, id)).returning();
+  if (!row) throw notFound("Work item");
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "work_item", entityId: id,
     summary: `${actor.name} updated work item ${row.title} (via API)`,
@@ -191,6 +199,7 @@ export async function completeWorkItem(actor: Actor, id: string) {
     .set({ completedAt: now, updatedAt: now })
     .where(eq(workItems.id, id))
     .returning();
+  if (!row) throw notFound("Work item");
   await logActivity({
     actorId: actor.id, verb: "completed", entityKind: "work_item", entityId: id,
     summary: `${actor.name} completed work item ${row.title} (via API)`,
@@ -230,6 +239,7 @@ export async function addTask(actor: Actor, workItemId: string, input: unknown) 
       dueDate: data.dueDate ?? null,
     })
     .returning();
+  if (!row) throw notFound("Task");
   await logActivity({
     actorId: actor.id, verb: "created", entityKind: "work_item", entityId: workItemId,
     summary: `${actor.name} added task ${row.title} (via API)`,
@@ -237,11 +247,13 @@ export async function addTask(actor: Actor, workItemId: string, input: unknown) 
   return presentTask(row);
 }
 
-export async function toggleTask(actor: Actor, taskId: string, completed: boolean) {
+export async function toggleTask(actor: Actor, taskId: string, completed: boolean, workItemId?: string) {
   requireWrite(actor);
   const flag = parse(z.boolean(), completed);
   const [existing] = await db.select().from(workTasks).where(eq(workTasks.id, taskId)).limit(1);
-  if (!existing) throw notFound("Task");
+  // When addressed via the nested REST route, the task must belong to that work
+  // item (prevents toggling another work item's task through a forged path).
+  if (!existing || (workItemId !== undefined && existing.workItemId !== workItemId)) throw notFound("Task");
   const now = new Date();
   const [row] = await db
     .update(workTasks)
@@ -252,6 +264,7 @@ export async function toggleTask(actor: Actor, taskId: string, completed: boolea
     })
     .where(eq(workTasks.id, taskId))
     .returning();
+  if (!row) throw notFound("Task");
   await logActivity({
     actorId: actor.id, verb: flag ? "completed" : "reopened", entityKind: "work_item", entityId: row.workItemId,
     summary: `${actor.name} ${flag ? "completed" : "reopened"} task ${row.title} (via API)`,

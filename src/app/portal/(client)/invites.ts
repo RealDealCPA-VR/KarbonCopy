@@ -61,6 +61,7 @@ export async function createPortalInvite(contactId: string): Promise<CreateInvit
       .insert(portalUsers)
       .values({ contactId, email, active: true, inviteToken, inviteExpiresAt })
       .returning();
+    if (!created) throw new Error("Portal user could not be created.");
     portalUserId = created.id;
   }
 

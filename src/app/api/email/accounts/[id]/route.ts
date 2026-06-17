@@ -22,8 +22,12 @@ async function guard() {
   try {
     await requireAdmin();
     return null;
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  } catch (e) {
+    const unauth = e instanceof Error && e.message === "UNAUTHENTICATED";
+    return NextResponse.json(
+      { error: unauth ? "Unauthorized" : "Forbidden" },
+      { status: unauth ? 401 : 403 },
+    );
   }
 }
 
@@ -40,7 +44,12 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   if (denied) return denied;
   const { id } = await ctx.params;
 
-  const account = await getAccount(id);
+  let account;
+  try {
+    account = await getAccount(id);
+  } catch {
+    return NextResponse.json({ error: "Failed to load email account." }, { status: 500 });
+  }
   if (!account) return NextResponse.json({ error: "Account not found." }, { status: 404 });
 
   let body: PatchBody;
@@ -48,6 +57,15 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     body = (await req.json()) as PatchBody;
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  // Reject blank label/address when provided (POST already does; keep PATCH parity
+  // so an update can't null out a required field with an empty string).
+  if (body.label !== undefined && !body.label.trim()) {
+    return NextResponse.json({ error: "Label cannot be empty." }, { status: 400 });
+  }
+  if (body.address !== undefined && !body.address.trim()) {
+    return NextResponse.json({ error: "Email address cannot be empty." }, { status: 400 });
   }
 
   // Only rebuild config when SMTP/IMAP fields are present in the payload.
@@ -73,12 +91,17 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     });
   }
 
-  const updated = await updateAccount(id, {
-    label: body.label?.trim(),
-    address: body.address?.trim(),
-    enabled: body.enabled,
-    config,
-  });
+  let updated;
+  try {
+    updated = await updateAccount(id, {
+      label: body.label?.trim(),
+      address: body.address?.trim(),
+      enabled: body.enabled,
+      config,
+    });
+  } catch {
+    return NextResponse.json({ error: "Failed to update email account." }, { status: 500 });
+  }
   if (!updated) return NextResponse.json({ error: "Account not found." }, { status: 404 });
 
   return NextResponse.json({ account: toSafeAccount(updated) });
@@ -88,6 +111,10 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   const denied = await guard();
   if (denied) return denied;
   const { id } = await ctx.params;
-  await deleteAccount(id);
+  try {
+    await deleteAccount(id);
+  } catch {
+    return NextResponse.json({ error: "Failed to delete email account." }, { status: 500 });
+  }
   return NextResponse.json({ ok: true });
 }

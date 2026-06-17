@@ -66,11 +66,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
   }
 
   // Load the request + its source document.
-  const [request] = await db
-    .select()
-    .from(schema.signatureRequests)
-    .where(eq(schema.signatureRequests.magicToken, token))
-    .limit(1);
+  let request;
+  try {
+    [request] = await db
+      .select()
+      .from(schema.signatureRequests)
+      .where(eq(schema.signatureRequests.magicToken, token))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/sign] request lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load signing request." }, { status: 500 });
+  }
 
   if (!request) return NextResponse.json({ error: "This signing link is invalid." }, { status: 404 });
   if (request.status === "signed") {
@@ -86,11 +92,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     return NextResponse.json({ error: "No document is attached to this request." }, { status: 409 });
   }
 
-  const [doc] = await db
-    .select({ storagePath: schema.documents.storagePath, name: schema.documents.name })
-    .from(schema.documents)
-    .where(eq(schema.documents.id, request.documentId))
-    .limit(1);
+  let doc;
+  try {
+    [doc] = await db
+      .select({ storagePath: schema.documents.storagePath, name: schema.documents.name })
+      .from(schema.documents)
+      .where(eq(schema.documents.id, request.documentId))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/sign] document lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load the document." }, { status: 500 });
+  }
   if (!doc) return NextResponse.json({ error: "The document could not be found." }, { status: 404 });
 
   // Read the source PDF bytes (local uploads only; never a UNC/file-server path).
@@ -208,23 +220,30 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     if (err instanceof Error && err.message === "REQUEST_GONE") {
       return NextResponse.json({ error: "This signing link is invalid." }, { status: 404 });
     }
-    throw err;
+    console.error("[portal/sign] commit failed:", (err as Error).message);
+    return NextResponse.json({ error: "We couldn't record the signature." }, { status: 500 });
   }
 
-  // Notify the request creator + live broadcast (outside the tx).
+  // Notify the request creator + live broadcast (outside the tx). Best-effort:
+  // the signature is already committed, so a notification failure must not turn a
+  // successful signing into a 500 for the client.
   if (request.createdById) {
-    const [notif] = await db
-      .insert(schema.notifications)
-      .values({
-        userId: request.createdById,
-        type: "signature",
-        title: "A document was signed",
-        body: `${signerName} signed "${request.title}".`,
-        entityKind: "signature_request",
-        entityId: request.id,
-      })
-      .returning();
-    emitToUser(request.createdById, "notification", notif);
+    try {
+      const [notif] = await db
+        .insert(schema.notifications)
+        .values({
+          userId: request.createdById,
+          type: "signature",
+          title: "A document was signed",
+          body: `${signerName} signed "${request.title}".`,
+          entityKind: "signature_request",
+          entityId: request.id,
+        })
+        .returning();
+      if (notif) emitToUser(request.createdById, "notification", notif);
+    } catch (err) {
+      console.error("[portal/sign] notification failed:", (err as Error).message);
+    }
   }
   broadcast("signature_event", {
     type: "signed",

@@ -70,7 +70,7 @@ export const teams = sqliteTable("teams", {
 export const sessions = sqliteTable("sessions", {
   id: id(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  token: text("token").notNull(),
+  token: text("token").notNull().unique(),
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
   createdAt: createdAt(),
 });
@@ -339,7 +339,9 @@ export const documentRequests = sqliteTable("document_requests", {
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
   createdById: text("created_by_id").references(() => users.id),
   createdAt: createdAt(),
-});
+}, (t) => ({
+  tokenIdx: uniqueIndex("doc_req_token_idx").on(t.magicToken),
+}));
 
 /* ------------------------------------------------------------------ */
 /* Triage / shared inbox                                               */
@@ -384,7 +386,8 @@ export const messages = sqliteTable(
 
 export type EntityKind =
   | "work_item" | "organization" | "contact" | "thread" | "document" | "time_entry"
-  | "invoice" | "payment" | "deadline" | "anomaly" | "signature_request" | "setting";
+  | "invoice" | "payment" | "deadline" | "anomaly" | "signature_request" | "setting"
+  | "folder" | "document_request";
 
 export const comments = sqliteTable(
   "comments",
@@ -584,6 +587,9 @@ export const invoices = sqliteTable(
     orgIdx: index("invoices_org_idx").on(t.organizationId),
     statusIdx: index("invoices_status_idx").on(t.status),
     numberIdx: uniqueIndex("invoices_number_idx").on(t.number),
+    // One public pay-link per invoice. SQLite treats NULLs as distinct, so
+    // unset payTokens don't collide.
+    payTokenIdx: uniqueIndex("invoices_pay_token_idx").on(t.payToken),
   }),
 );
 
@@ -621,7 +627,12 @@ export const payments = sqliteTable(
     createdById: text("created_by_id").references(() => users.id),
     createdAt: createdAt(),
   },
-  (t) => ({ invoiceIdx: index("payments_invoice_idx").on(t.invoiceId) }),
+  (t) => ({
+    invoiceIdx: index("payments_invoice_idx").on(t.invoiceId),
+    // Hard guard against double-crediting a processor payment. NULL processorRef
+    // (manual payments) are distinct in SQLite, so they never collide.
+    processorRefIdx: uniqueIndex("payments_processor_ref_idx").on(t.processor, t.processorRef),
+  }),
 );
 
 /* ---- Authenticated client portal -------------------------------- */
@@ -649,7 +660,7 @@ export const portalUsers = sqliteTable(
 export const portalSessions = sqliteTable("portal_sessions", {
   id: id(),
   portalUserId: text("portal_user_id").notNull().references(() => portalUsers.id, { onDelete: "cascade" }),
-  token: text("token").notNull(),
+  token: text("token").notNull().unique(),
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
   createdAt: createdAt(),
 });
@@ -724,6 +735,10 @@ export const complianceDeadlines = sqliteTable(
   (t) => ({
     dueIdx: index("deadlines_due_idx").on(t.dueDate),
     orgIdx: index("deadlines_org_idx").on(t.organizationId),
+    // Prevent duplicate auto-generated deadlines for the same (org, rule, period)
+    // if generation runs concurrently (UI button + scheduler tick). Manually
+    // created deadlines have a NULL ruleKey, which SQLite keeps distinct.
+    genKeyIdx: uniqueIndex("deadlines_org_rule_period_idx").on(t.organizationId, t.ruleKey, t.taxPeriod),
   }),
 );
 

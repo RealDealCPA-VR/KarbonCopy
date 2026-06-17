@@ -192,6 +192,7 @@ async function ingestMessage(account: EmailAccount, msg: FetchMessageObject): Pr
         lastMessageAt: receivedAt,
       })
       .returning({ id: inboxThreads.id });
+    if (!thread) throw new Error("Inbox thread could not be created.");
     threadId = thread.id;
   } else {
     // Backfill links + bump activity timestamp on the existing thread.
@@ -201,17 +202,23 @@ async function ingestMessage(account: EmailAccount, msg: FetchMessageObject): Pr
       .where(eq(inboxThreads.id, threadId));
   }
 
-  await db.insert(messages).values({
-    threadId,
-    fromName: from.name,
-    fromEmail: from.email,
-    toEmail: to.email ?? account.address,
-    body: body || "(empty message)",
-    direction: "inbound",
-    externalId: messageId,
-    accountId: account.id,
-    createdAt: receivedAt,
-  });
+  const [msgRow] = await db
+    .insert(messages)
+    .values({
+      threadId,
+      fromName: from.name,
+      fromEmail: from.email,
+      toEmail: to.email ?? account.address,
+      body: body || "(empty message)",
+      direction: "inbound",
+      externalId: messageId,
+      accountId: account.id,
+      createdAt: receivedAt,
+    })
+    .returning({ id: messages.id });
+  // Only claim success once the row is actually persisted — otherwise the poller
+  // advances its UID cursor past this message and it's lost forever.
+  if (!msgRow) throw new Error("Inbound message could not be created.");
 
   // Notify the assignee (if any) + broadcast for live inbox refresh.
   const [thread] = await db
@@ -232,7 +239,7 @@ async function ingestMessage(account: EmailAccount, msg: FetchMessageObject): Pr
         entityId: threadId,
       })
       .returning();
-    emitToUser(thread.assigneeId, "notification", notif);
+    if (notif) emitToUser(thread.assigneeId, "notification", notif);
   }
 
   broadcast("inbox_message", {
@@ -304,7 +311,12 @@ async function pollAccount(account: EmailAccount): Promise<void> {
           if (ingested) count++;
         } catch (err) {
           console.error(`[email] ingest failed (account ${account.id}, uid ${msg.uid}):`, err);
+          // Do NOT advance the UID cursor past a message we failed to persist —
+          // and stop here so we don't skip it by advancing past a later UID. It
+          // will be retried from this UID on the next poll.
+          break;
         }
+        // Only advance the cursor once the message is actually persisted.
         if (msg.uid > maxUid) maxUid = msg.uid;
       }
       lastUidByAccount.set(account.id, maxUid);
@@ -390,6 +402,11 @@ function smtpTransport(config: SmtpImapConfig) {
     port: config.smtp.port,
     secure: config.smtp.secure,
     auth: { user: config.smtp.user, pass: config.smtp.pass },
+    // Bound the connect/socket so an unresponsive SMTP server can't hang the
+    // single shared process (mirrors the IMAP client's 30s socketTimeout).
+    connectionTimeout: 30_000,
+    socketTimeout: 30_000,
+    greetingTimeout: 30_000,
   });
 }
 
@@ -434,12 +451,21 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   const from = input.fromName ? `${input.fromName} <${fromAddress}>` : fromAddress;
 
   const transport = smtpTransport(config);
-  const info = await transport.sendMail({
-    from,
-    to,
-    subject,
-    text: input.body,
-  });
+  let info;
+  try {
+    info = await transport.sendMail({
+      from,
+      to,
+      subject,
+      text: input.body,
+    });
+  } catch (err) {
+    // Surface a clean, operator-actionable message (their own SMTP server's
+    // response) without leaking an error object/stack; log the full detail.
+    console.error("[email] sendMail failed:", err);
+    const detail = err instanceof Error ? err.message : "unknown SMTP error";
+    throw new Error(`Email could not be sent: ${detail}`);
+  }
   const messageId = (info.messageId as string | undefined) ?? null;
 
   // Resolve/create the thread for the sent mail.
@@ -465,6 +491,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
         lastMessageAt: now,
       })
       .returning({ id: inboxThreads.id });
+    if (!thread) throw new Error("Inbox thread could not be created.");
     threadId = thread.id;
   }
 
@@ -482,6 +509,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       sentById: input.sentById ?? null,
     })
     .returning({ id: messages.id });
+  if (!row) throw new Error("Outbound message could not be created.");
 
   await db.update(inboxThreads).set({ lastMessageAt: now }).where(eq(inboxThreads.id, threadId));
 

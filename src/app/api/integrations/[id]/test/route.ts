@@ -24,40 +24,50 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { id } = await params;
-  const [row] = await db
-    .select()
-    .from(integrationConfigs)
-    .where(eq(integrationConfigs.id, id));
-  if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    const [row] = await db
+      .select()
+      .from(integrationConfigs)
+      .where(eq(integrationConfigs.id, id))
+      .limit(1);
+    if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const stored = parseStoredConfig(row.config);
-  const transport = toTransportConfig(stored);
+    const stored = parseStoredConfig(row.config);
+    const transport = toTransportConfig(stored);
 
-  if (transport.transport === "stdio" && !transport.command) {
+    if (transport.transport === "stdio" && !transport.command) {
+      await db
+        .update(integrationConfigs)
+        .set({ status: "unconfigured", lastError: "No launch command configured" })
+        .where(eq(integrationConfigs.id, id));
+      return NextResponse.json({ ok: false, status: "unconfigured", error: "No launch command configured" });
+    }
+
+    const res = await listTools(transport);
+    if (!res.ok) {
+      await db
+        .update(integrationConfigs)
+        .set({ status: "error", lastError: res.error })
+        .where(eq(integrationConfigs.id, id));
+      return NextResponse.json({ ok: false, status: "error", error: res.error });
+    }
+
     await db
       .update(integrationConfigs)
-      .set({ status: "unconfigured", lastError: "No launch command configured" })
+      .set({ status: "ok", lastError: null })
       .where(eq(integrationConfigs.id, id));
-    return NextResponse.json({ ok: false, status: "unconfigured", error: "No launch command configured" });
+    return NextResponse.json({
+      ok: true,
+      status: "ok",
+      toolCount: res.data.length,
+      tools: res.data.slice(0, 12).map((t) => t.name),
+    });
+  } catch (err) {
+    // Contract: this route never throws — surface DB/transport failures as a
+    // clean { ok:false, status:"error" } body the UI can render.
+    return NextResponse.json(
+      { ok: false, status: "error", error: (err as Error).message || "Integration test failed" },
+      { status: 500 },
+    );
   }
-
-  const res = await listTools(transport);
-  if (!res.ok) {
-    await db
-      .update(integrationConfigs)
-      .set({ status: "error", lastError: res.error })
-      .where(eq(integrationConfigs.id, id));
-    return NextResponse.json({ ok: false, status: "error", error: res.error });
-  }
-
-  await db
-    .update(integrationConfigs)
-    .set({ status: "ok", lastError: null })
-    .where(eq(integrationConfigs.id, id));
-  return NextResponse.json({
-    ok: true,
-    status: "ok",
-    toolCount: res.data.length,
-    tools: res.data.slice(0, 12).map((t) => t.name),
-  });
 }

@@ -35,11 +35,23 @@ export function ContactsTab({
 
   async function onTogglePortal(c: Contact, enabled: boolean) {
     const res = await toggleContactPortal(c.id, enabled);
-    if (!res.ok) toast.error(res.error);
-    else {
-      toast.success(enabled ? "Portal access enabled" : "Portal access disabled");
-      router.refresh();
+    if (!res.ok) {
+      toast.error(res.error);
+      return;
     }
+    if (enabled && res.data?.inviteUrl) {
+      try {
+        await navigator.clipboard.writeText(res.data.inviteUrl);
+      } catch {
+        /* clipboard may be blocked; the link is still shown below */
+      }
+      toast.success("Portal invite created — link copied to clipboard", {
+        description: res.data.inviteUrl,
+      });
+    } else {
+      toast.success(enabled ? "Portal access enabled" : "Portal access disabled");
+    }
+    router.refresh();
   }
 
   async function onDelete(c: Contact) {

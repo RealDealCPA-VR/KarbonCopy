@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `payments_processor_ref_idx` ON `payments` (`processor`,`processor_ref`);

@@ -6,6 +6,8 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 
 const PREFIX = "enc:v1:";
+let warnedPlaintext = false;
+let warnedDecryptFail = false;
 
 function key(): Buffer {
   const secret = process.env.APP_ENCRYPTION_KEY || process.env.AUTH_SECRET || "";
@@ -25,15 +27,39 @@ export function encryptField(plain: string | null | undefined): string | null {
 
 export function decryptField(stored: string | null | undefined): string | null {
   if (stored == null || stored === "") return stored ?? null;
-  if (!stored.startsWith(PREFIX)) return stored; // legacy plaintext — return as-is
+  if (!stored.startsWith(PREFIX)) {
+    // Legacy/plaintext value (no enc: prefix). All current writes encrypt, so a
+    // plaintext read is unexpected — surface it once instead of failing silently.
+    if (!warnedPlaintext) {
+      warnedPlaintext = true;
+      console.warn("[crypto] read an unencrypted value (no enc:v1: prefix) — a field may have been stored in plaintext.");
+    }
+    return stored;
+  }
   try {
     const [ivB64, tagB64, ctB64] = stored.slice(PREFIX.length).split(":");
     const decipher = createDecipheriv("aes-256-gcm", key(), Buffer.from(ivB64, "base64"));
     decipher.setAuthTag(Buffer.from(tagB64, "base64"));
     return Buffer.concat([decipher.update(Buffer.from(ctB64, "base64")), decipher.final()]).toString("utf8");
   } catch {
+    // An enc:v1: value that won't decrypt = wrong APP_ENCRYPTION_KEY or corruption.
+    // Never silently treat this as "no value" — make the key-rotation mistake loud.
+    if (!warnedDecryptFail) {
+      warnedDecryptFail = true;
+      console.error("[crypto] failed to decrypt an enc:v1: value — APP_ENCRYPTION_KEY may have changed or the data is corrupt. Stored secrets/PII are unreadable until the original key is restored.");
+    }
     return null;
   }
+}
+
+/**
+ * True if `stored` is an enc:v1: value that DECRYPTS with the current key.
+ * Used by startup validation to detect a changed APP_ENCRYPTION_KEY before any
+ * service silently treats unreadable secrets as "not configured".
+ */
+export function canDecrypt(stored: string | null | undefined): boolean {
+  if (stored == null || stored === "" || !stored.startsWith(PREFIX)) return true;
+  return decryptField(stored) !== null;
 }
 
 /** Display mask for an EIN/SSN-like value (operates on decrypted plaintext). */

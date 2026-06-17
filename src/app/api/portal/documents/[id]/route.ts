@@ -25,11 +25,17 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   if (!orgId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { id } = await ctx.params;
-  const [doc] = await db
-    .select()
-    .from(schema.documents)
-    .where(eq(schema.documents.id, id))
-    .limit(1);
+  let doc;
+  try {
+    [doc] = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.id, id))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/download] document lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load document." }, { status: 500 });
+  }
 
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -53,6 +59,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   }
 
   const nodeStream = createReadStream(abs);
+  nodeStream.on("error", (err) => console.error("[portal/download] stream error on", abs, ":", err.message));
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
 
   const headers = new Headers();

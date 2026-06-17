@@ -5,10 +5,15 @@
 import { z } from "zod";
 import { and, desc, eq, isNull, like } from "drizzle-orm";
 import { db, schema, type Actor, requireWrite, requireManager, parse, logActivity, pagination } from "./_base";
-import { notFound } from "@/lib/api/errors";
+import { notFound, validation } from "@/lib/api/errors";
 import { encryptField, decryptField, maskTaxId } from "@/lib/crypto";
 
-const { organizations } = schema;
+const { organizations, users } = schema;
+
+async function assertUser(id: string) {
+  const [r] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+  if (!r) throw validation(`User ${id} not found`);
+}
 
 const ENTITY_TYPES = [
   "individual", "sole_prop", "partnership", "s_corp", "c_corp",
@@ -80,6 +85,7 @@ function requireCanSeeEin(actor: Actor): boolean {
 export async function createOrganization(actor: Actor, input: unknown) {
   requireWrite(actor);
   const data = parse(createInput, input);
+  if (data.ownerId) await assertUser(data.ownerId);
   const [row] = await db
     .insert(organizations)
     .values({
@@ -96,6 +102,7 @@ export async function createOrganization(actor: Actor, input: unknown) {
       isClient: data.isClient,
     })
     .returning();
+  if (!row) throw notFound("Organization");
   await logActivity({
     actorId: actor.id,
     verb: "created",
@@ -111,12 +118,14 @@ export async function updateOrganization(actor: Actor, id: string, input: unknow
   const data = parse(updateInput, input);
   const [existing] = await db.select().from(organizations).where(eq(organizations.id, id)).limit(1);
   if (!existing || existing.deletedAt) throw notFound("Organization");
+  if (data.ownerId) await assertUser(data.ownerId);
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   for (const k of ["name", "entityType", "email", "phone", "website", "address", "fiscalYearEnd", "notes", "ownerId", "isClient"] as const) {
     if (data[k] !== undefined) patch[k] = data[k] === "" ? null : data[k];
   }
   if (data.ein !== undefined) patch.ein = data.ein ? encryptField(data.ein) : null;
   const [row] = await db.update(organizations).set(patch).where(eq(organizations.id, id)).returning();
+  if (!row) throw notFound("Organization");
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "organization", entityId: id,
     summary: `${actor.name} updated client ${row.name} (via API)`,

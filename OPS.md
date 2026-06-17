@@ -4,9 +4,13 @@ Self-hosted, single-process LAN deployment (Next + Socket.IO + file watcher) bou
 to `0.0.0.0:3000`. This document covers running it as an always-on service, backups,
 and log rotation.
 
-> **Prereqs:** `pnpm install` and `pnpm build` have been run; the server starts with
-> `pnpm start` (= `NODE_ENV=production tsx server.ts`). Health endpoint: `GET /healthz`
-> returns `{ ok: true, dev: false }` when healthy.
+> **Prereqs (first run):** `pnpm install`, then `pnpm build`. Set `AUTH_SECRET` +
+> `APP_ENCRYPTION_KEY` in `.env.local`. The server **auto-applies migrations and
+> seeds the default work statuses on boot**, but you must run **`pnpm db:seed`
+> once** to create the initial admin login (`admin@firm.com` / `admin123`) and demo
+> data — without it you cannot sign in. Then start with `pnpm start`
+> (= `NODE_ENV=production tsx server.ts`). Health endpoint: `GET /healthz` returns
+> `{ ok: true, dev: false }` when healthy.
 
 ---
 
@@ -52,16 +56,19 @@ After every deploy: `pm2 restart karboncopy && pm2 save`.
 NSSM wraps `pnpm start` as a Windows Service (auto-starts on boot, restarts on crash,
 visible in `services.msc`).
 
+> Replace `<KARBONCOPY_ROOT>` below with your actual install path
+> (e.g. `C:\Users\you\KarbonCopy`).
+
 ```powershell
 # Install NSSM (e.g. via scoop/choco) then register the service.
 # Point Application at the pnpm shim and pass `start`; set the working dir.
 nssm install KarbonCopy "C:\Program Files\nodejs\pnpm.cmd" start
-nssm set KarbonCopy AppDirectory "C:\Users\VR\projects\KarbonCopy"
+nssm set KarbonCopy AppDirectory "<KARBONCOPY_ROOT>"
 nssm set KarbonCopy AppEnvironmentExtra NODE_ENV=production PORT=3000 HOST=0.0.0.0
 
 # Log redirection (NSSM writes the process stdout/stderr to files).
-nssm set KarbonCopy AppStdout "C:\Users\VR\projects\KarbonCopy\logs\karboncopy-out.log"
-nssm set KarbonCopy AppStderr "C:\Users\VR\projects\KarbonCopy\logs\karboncopy-error.log"
+nssm set KarbonCopy AppStdout "<KARBONCOPY_ROOT>\logs\karboncopy-out.log"
+nssm set KarbonCopy AppStderr "<KARBONCOPY_ROOT>\logs\karboncopy-error.log"
 
 # Restart on crash; start automatically at boot.
 nssm set KarbonCopy AppExit Default Restart
@@ -118,8 +125,9 @@ pnpm backup
 Run as the **same account** that runs the server, from the project root:
 
 ```bat
+:: Replace <KARBONCOPY_ROOT> with your actual install path.
 schtasks /Create /SC DAILY /ST 02:00 /TN "KarbonCopy Backup" ^
-  /TR "cmd /c cd /d C:\Users\VR\projects\KarbonCopy && pnpm backup >> logs\backup.log 2>&1"
+  /TR "cmd /c cd /d <KARBONCOPY_ROOT> && pnpm backup >> logs\backup.log 2>&1"
 ```
 
 Verify / inspect / remove:

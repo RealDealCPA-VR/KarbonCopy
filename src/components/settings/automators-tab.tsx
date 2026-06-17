@@ -36,20 +36,22 @@ import {
 // but disabled in the create dialog so admins can't create dead rules.
 const TRIGGERS: { value: AutomatorTrigger; label: string; available: boolean }[] = [
   { value: "status_changed", label: "Status changed", available: true },
-  { value: "work_created", label: "Work created", available: false },
-  { value: "task_completed", label: "Task completed", available: false },
-  { value: "due_approaching", label: "Due date approaching", available: false },
+  { value: "work_created", label: "Work created", available: true },
+  { value: "task_completed", label: "Task completed", available: true },
+  { value: "due_approaching", label: "Due date approaching", available: true },
+  // file_event is not yet wired into the watcher → keep disabled.
   { value: "file_event", label: "File-server event", available: false },
-  { value: "all_tasks_done", label: "All tasks done", available: false },
+  { value: "all_tasks_done", label: "All tasks done", available: true },
 ];
 
 const ACTIONS: { value: AutomatorAction; label: string; available: boolean }[] = [
   { value: "set_status", label: "Set status", available: true },
   { value: "assign", label: "Assign", available: true },
   { value: "notify", label: "Notify", available: true },
-  { value: "create_task", label: "Create task", available: false },
+  { value: "create_task", label: "Create task", available: true },
+  // send_email only records intent as a notification (no real send yet) → disabled.
   { value: "send_email", label: "Send email", available: false },
-  { value: "create_work", label: "Create work item", available: false },
+  { value: "create_work", label: "Create work item", available: true },
 ];
 
 const triggerLabel = (t: AutomatorTrigger) => TRIGGERS.find((x) => x.value === t)?.label ?? t;

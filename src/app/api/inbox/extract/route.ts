@@ -22,7 +22,13 @@ export async function POST(req: Request) {
   }
   if (!threadId) return NextResponse.json({ error: "Missing threadId." }, { status: 400 });
 
-  const text = await buildThreadText(threadId);
+  let text: string | null;
+  try {
+    text = await buildThreadText(threadId);
+  } catch (err) {
+    console.error("[inbox/extract] buildThreadText failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load thread." }, { status: 500 });
+  }
   if (!text) return NextResponse.json({ error: "Thread not found." }, { status: 404 });
 
   try {

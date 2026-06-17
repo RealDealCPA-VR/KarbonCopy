@@ -20,8 +20,12 @@ interface TestBody {
 export async function POST(req: Request) {
   try {
     await requireAdmin();
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  } catch (e) {
+    const unauth = e instanceof Error && e.message === "UNAUTHENTICATED";
+    return NextResponse.json(
+      { error: unauth ? "Unauthorized" : "Forbidden" },
+      { status: unauth ? 401 : 403 },
+    );
   }
 
   let body: TestBody;
@@ -35,8 +39,13 @@ export async function POST(req: Request) {
   // password fields reuse the stored secret.
   let existing = null;
   if (body.id) {
-    const account = await getAccount(body.id);
-    if (account) existing = getAccountConfig(account);
+    try {
+      const account = await getAccount(body.id);
+      if (account) existing = getAccountConfig(account);
+    } catch (err) {
+      console.error("[email/test] account lookup failed:", (err as Error).message);
+      return NextResponse.json({ error: "Failed to load email account." }, { status: 500 });
+    }
   }
 
   const config: SmtpImapConfig = mergeSmtpImapConfig(existing, {
@@ -57,6 +66,11 @@ export async function POST(req: Request) {
     },
   });
 
-  const result = await testConnection(config);
-  return NextResponse.json(result);
+  try {
+    const result = await testConnection(config);
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error("[email/test] connection test failed:", (err as Error).message);
+    return NextResponse.json({ error: "Connection test failed." }, { status: 502 });
+  }
 }

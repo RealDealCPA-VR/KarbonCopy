@@ -29,15 +29,19 @@ async function logActivity(actorId: string, verb: string, anomalyId: string, sum
 /** Mark an anomaly reviewed (handled / acknowledged as a real issue). */
 export async function reviewAnomaly(id: string): Promise<AnomalyActionResult> {
   const user = await requireWrite();
-  const [row] = await db.select().from(anomalies).where(eq(anomalies.id, id)).limit(1);
-  if (!row) return { ok: false, error: "Anomaly not found" };
+  try {
+    const [row] = await db.select().from(anomalies).where(eq(anomalies.id, id)).limit(1);
+    if (!row) return { ok: false, error: "Anomaly not found" };
 
-  await db
-    .update(anomalies)
-    .set({ status: "reviewed", reviewedById: user.id })
-    .where(eq(anomalies.id, id));
+    await db
+      .update(anomalies)
+      .set({ status: "reviewed", reviewedById: user.id })
+      .where(eq(anomalies.id, id));
 
-  await logActivity(user.id, "reviewed", id, `Reviewed anomaly “${row.title}”`);
+    await logActivity(user.id, "reviewed", id, `Reviewed anomaly “${row.title}”`);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to review anomaly." };
+  }
   revalidatePath("/anomalies");
   return { ok: true };
 }
@@ -45,15 +49,19 @@ export async function reviewAnomaly(id: string): Promise<AnomalyActionResult> {
 /** Dismiss an anomaly (false positive / not actionable). */
 export async function dismissAnomaly(id: string): Promise<AnomalyActionResult> {
   const user = await requireWrite();
-  const [row] = await db.select().from(anomalies).where(eq(anomalies.id, id)).limit(1);
-  if (!row) return { ok: false, error: "Anomaly not found" };
+  try {
+    const [row] = await db.select().from(anomalies).where(eq(anomalies.id, id)).limit(1);
+    if (!row) return { ok: false, error: "Anomaly not found" };
 
-  await db
-    .update(anomalies)
-    .set({ status: "dismissed", reviewedById: user.id })
-    .where(eq(anomalies.id, id));
+    await db
+      .update(anomalies)
+      .set({ status: "dismissed", reviewedById: user.id })
+      .where(eq(anomalies.id, id));
 
-  await logActivity(user.id, "dismissed", id, `Dismissed anomaly “${row.title}”`);
+    await logActivity(user.id, "dismissed", id, `Dismissed anomaly “${row.title}”`);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to dismiss anomaly." };
+  }
   revalidatePath("/anomalies");
   return { ok: true };
 }
@@ -61,11 +69,17 @@ export async function dismissAnomaly(id: string): Promise<AnomalyActionResult> {
 /** Re-open a reviewed/dismissed anomaly. */
 export async function reopenAnomaly(id: string): Promise<AnomalyActionResult> {
   const user = await requireWrite();
-  await db
-    .update(anomalies)
-    .set({ status: "open", reviewedById: null })
-    .where(eq(anomalies.id, id));
-  await logActivity(user.id, "updated", id, "Re-opened anomaly");
+  try {
+    const [row] = await db.select().from(anomalies).where(eq(anomalies.id, id)).limit(1);
+    if (!row) return { ok: false, error: "Anomaly not found" };
+    await db
+      .update(anomalies)
+      .set({ status: "open", reviewedById: null })
+      .where(eq(anomalies.id, id));
+    await logActivity(user.id, "updated", id, "Re-opened anomaly");
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to reopen anomaly." };
+  }
   revalidatePath("/anomalies");
   return { ok: true };
 }
@@ -73,26 +87,30 @@ export async function reopenAnomaly(id: string): Promise<AnomalyActionResult> {
 /** Bulk-resolve every currently-open anomaly for one org (or all). */
 export async function reviewAllOpen(organizationId?: string): Promise<AnomalyActionResult> {
   const user = await requireWrite();
-  const rows = await db
-    .select({ id: anomalies.id })
-    .from(anomalies)
-    .where(eq(anomalies.status, "open"));
-  let ids = rows.map((r) => r.id);
-  if (organizationId) {
-    const scoped = await db
+  try {
+    const rows = await db
       .select({ id: anomalies.id })
       .from(anomalies)
-      .where(eq(anomalies.organizationId, organizationId));
-    const scopedSet = new Set(scoped.map((r) => r.id));
-    ids = ids.filter((id) => scopedSet.has(id));
-  }
-  if (ids.length === 0) return { ok: true };
+      .where(eq(anomalies.status, "open"));
+    let ids = rows.map((r) => r.id);
+    if (organizationId) {
+      const scoped = await db
+        .select({ id: anomalies.id })
+        .from(anomalies)
+        .where(eq(anomalies.organizationId, organizationId));
+      const scopedSet = new Set(scoped.map((r) => r.id));
+      ids = ids.filter((id) => scopedSet.has(id));
+    }
+    if (ids.length === 0) return { ok: true };
 
-  await db
-    .update(anomalies)
-    .set({ status: "reviewed", reviewedById: user.id })
-    .where(inArray(anomalies.id, ids));
-  await logActivity(user.id, "reviewed", ids[0], `Reviewed ${ids.length} open anomalies`);
+    await db
+      .update(anomalies)
+      .set({ status: "reviewed", reviewedById: user.id })
+      .where(inArray(anomalies.id, ids));
+    await logActivity(user.id, "reviewed", ids[0], `Reviewed ${ids.length} open anomalies`);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to review anomalies." };
+  }
   revalidatePath("/anomalies");
   return { ok: true };
 }
@@ -108,12 +126,17 @@ export async function runScan(
   const user = await requireWrite();
   if (!organizationId) return { ok: false, error: "Pick a client to scan" };
 
-  const txns = generateSampleTxns(organizationId);
-  const summary = await scanTransactions(organizationId, txns, {
-    source: "quickbooks",
-    config: sampleReconciliationConfig(txns),
-    actorId: user.id,
-  });
+  let summary: ScanSummary;
+  try {
+    const txns = generateSampleTxns(organizationId);
+    summary = await scanTransactions(organizationId, txns, {
+      source: "quickbooks",
+      config: sampleReconciliationConfig(txns),
+      actorId: user.id,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Books scan failed." };
+  }
   revalidatePath("/anomalies");
   return { ok: true, summary };
 }

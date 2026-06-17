@@ -362,7 +362,7 @@ async function notifyMatch(
           entityId: match.requestId,
         })
         .returning();
-      emitToUser(uid, "notification", notif);
+      if (notif) emitToUser(uid, "notification", notif);
     }
   } catch (e) {
     console.warn("[ocr] notify failed:", (e as Error).message);
@@ -417,6 +417,10 @@ export async function processDocument(input: ProcessDocumentInput): Promise<stri
         status: "pending",
       })
       .returning({ id: documentExtractions.id });
+    if (!row) {
+      console.error("[ocr] insert returned no row");
+      return null;
+    }
     extractionId = row.id;
     broadcast("extraction", { id: extractionId, status: "pending", sourcePath });
   } catch (e) {

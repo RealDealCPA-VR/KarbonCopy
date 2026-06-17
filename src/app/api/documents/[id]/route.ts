@@ -16,11 +16,17 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await ctx.params;
-  const [doc] = await db
-    .select()
-    .from(schema.documents)
-    .where(eq(schema.documents.id, id))
-    .limit(1);
+  let doc;
+  try {
+    [doc] = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.id, id))
+      .limit(1);
+  } catch (err) {
+    console.error("[download] document lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load document." }, { status: 500 });
+  }
 
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -30,12 +36,17 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // could fetch ANY document by id.
   let authorized = hasRole(user, "manager") || doc.uploadedById === user.id;
   if (!authorized && doc.organizationId) {
-    const [org] = await db
-      .select({ ownerId: schema.organizations.ownerId })
-      .from(schema.organizations)
-      .where(eq(schema.organizations.id, doc.organizationId))
-      .limit(1);
-    if (org?.ownerId && org.ownerId === user.id) authorized = true;
+    try {
+      const [org] = await db
+        .select({ ownerId: schema.organizations.ownerId })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, doc.organizationId))
+        .limit(1);
+      if (org?.ownerId && org.ownerId === user.id) authorized = true;
+    } catch (err) {
+      console.error("[download] org authz lookup failed:", (err as Error).message);
+      return NextResponse.json({ error: "Failed to load document." }, { status: 500 });
+    }
   }
   if (!authorized) {
     return NextResponse.json({ error: "You do not have access to this document." }, { status: 403 });
@@ -56,6 +67,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   }
 
   const nodeStream = createReadStream(abs);
+  // Handle mid-stream filesystem errors (file removed/permission lost) so they
+  // log cleanly instead of surfacing as an unhandled 'error' event.
+  nodeStream.on("error", (err) => console.error("[download] stream error on", abs, ":", err.message));
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
 
   const headers = new Headers();

@@ -47,10 +47,9 @@ export async function POST(req: NextRequest) {
   try {
     event = stripe().webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET!);
   } catch (err) {
-    return NextResponse.json(
-      { error: `Signature verification failed: ${err instanceof Error ? err.message : "unknown"}` },
-      { status: 400 },
-    );
+    // Public endpoint — log the SDK detail server-side, return a generic body.
+    console.error("[stripe] webhook signature verification failed:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Webhook signature verification failed." }, { status: 400 });
   }
 
   try {
@@ -61,14 +60,19 @@ export async function POST(req: NextRequest) {
           (session.metadata?.invoiceId as string | undefined) ||
           (session.client_reference_id as string | undefined) ||
           null;
-        // Prefer the payment_intent id as the idempotency ref; fall back to session id.
+        // Always key idempotency on the payment_intent id so this event and a
+        // later payment_intent.succeeded for the same payment dedupe correctly.
+        // (Never fall back to session.id — a divergent ref would double-credit.)
         const processorRef =
-          (typeof session.payment_intent === "string"
+          typeof session.payment_intent === "string"
             ? session.payment_intent
-            : session.payment_intent?.id) || session.id;
+            : session.payment_intent?.id ?? null;
         const amountCents = session.amount_total ?? 0;
-        if (invoiceId && amountCents > 0) {
-          await applyAndNotify({ invoiceId, amountCents, processorRef, reference: session.id });
+        if (invoiceId && processorRef && amountCents > 0) {
+          await applyAndNotify({ invoiceId, amountCents, processorRef, reference: processorRef });
+        } else if (invoiceId && !processorRef) {
+          // No payment_intent yet (rare) — let payment_intent.succeeded record it.
+          console.warn("[stripe] checkout.session.completed without payment_intent; deferring to payment_intent.succeeded");
         }
       }
     } else if (event.type === "payment_intent.succeeded") {
@@ -80,11 +84,11 @@ export async function POST(req: NextRequest) {
       }
     }
   } catch (err) {
-    // Return 500 so Stripe retries transient failures.
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Webhook processing failed." },
-      { status: 500 },
-    );
+    // Log the detail server-side; return a 500 so Stripe retries, but a GENERIC
+    // body — this is a public, internet-facing endpoint and must not leak raw
+    // DB/SDK error text.
+    console.error("[stripe] webhook processing error:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Webhook processing failed." }, { status: 500 });
   }
 
   // Always 200 for handled/ignored events so Stripe stops retrying.
@@ -119,17 +123,23 @@ async function applyAndNotify(opts: {
   }
 
   if (rmId) {
-    const [notif] = await db
-      .insert(schema.notifications)
-      .values({
-        userId: rmId,
-        type: "payment",
-        title: "Payment received",
-        body: `Invoice ${res.number} was paid online${res.status === "paid" ? " in full" : ""}.`,
-        entityKind: "invoice",
-        entityId: res.invoiceId,
-      })
-      .returning();
-    emitToUser(rmId, "notification", notif);
+    // Best-effort: the payment is already recorded, so a notification failure must
+    // not make the webhook return 500 (which would make Stripe retry a done payment).
+    try {
+      const [notif] = await db
+        .insert(schema.notifications)
+        .values({
+          userId: rmId,
+          type: "payment",
+          title: "Payment received",
+          body: `Invoice ${res.number} was paid online${res.status === "paid" ? " in full" : ""}.`,
+          entityKind: "invoice",
+          entityId: res.invoiceId,
+        })
+        .returning();
+      if (notif) emitToUser(rmId, "notification", notif);
+    } catch (err) {
+      console.error("[stripe] payment notification failed:", err instanceof Error ? err.message : "unknown");
+    }
   }
 }

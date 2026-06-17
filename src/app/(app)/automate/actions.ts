@@ -47,12 +47,16 @@ export async function applyWorkflowPlan(plan: WorkflowPlan): Promise<ApplyResult
   const fileRules = Array.isArray(plan.fileRules) ? plan.fileRules : [];
   let rootId: string | null = null;
   if (fileRules.length) {
-    const [root] = await db
-      .select({ id: schema.watchedRoots.id })
-      .from(schema.watchedRoots)
-      .orderBy(asc(schema.watchedRoots.createdAt))
-      .limit(1);
-    rootId = root?.id ?? null;
+    try {
+      const [root] = await db
+        .select({ id: schema.watchedRoots.id })
+        .from(schema.watchedRoots)
+        .orderBy(asc(schema.watchedRoots.createdAt))
+        .limit(1);
+      rootId = root?.id ?? null;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Failed to load watched folders." };
+    }
   }
   const skipFileRules = fileRules.length > 0 && !rootId;
 
@@ -75,6 +79,7 @@ export async function applyWorkflowPlan(plan: WorkflowPlan): Promise<ApplyResult
         })
         .returning({ id: schema.workTemplates.id })
         .all();
+      if (!template) throw new Error("Work template could not be created.");
 
       const tasks = Array.isArray(plan.tasks) ? plan.tasks : [];
       if (tasks.length) {

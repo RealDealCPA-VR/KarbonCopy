@@ -24,38 +24,78 @@ function clean(v: FormDataEntryValue | null): string | null {
 /* ------------------------------------------------------------------ */
 
 export async function createFolder(form: FormData): Promise<ActionResult<{ id: string }>> {
-  await requireWrite();
+  const user = await requireWrite();
   const name = clean(form.get("name"));
   if (!name) return { ok: false, error: "Folder name is required." };
   const organizationId = clean(form.get("organizationId"));
   if (!organizationId) return { ok: false, error: "A client is required for the folder." };
   const parentId = clean(form.get("parentId"));
 
-  const [row] = await db
-    .insert(folders)
-    .values({ name, organizationId, parentId })
-    .returning({ id: folders.id });
+  let row;
+  try {
+    [row] = await db
+      .insert(folders)
+      .values({ name, organizationId, parentId })
+      .returning({ id: folders.id });
+    if (!row) return { ok: false, error: "Folder could not be created." };
+
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "created",
+      entityKind: "folder",
+      entityId: row.id,
+      summary: `${user.name} created folder "${name}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Folder could not be created." };
+  }
 
   revalidatePath("/documents");
   return { ok: true, data: { id: row.id } };
 }
 
 export async function renameFolder(form: FormData): Promise<ActionResult> {
-  await requireWrite();
+  const user = await requireWrite();
   const id = clean(form.get("id"));
   const name = clean(form.get("name"));
   if (!id || !name) return { ok: false, error: "Missing folder id or name." };
-  await db.update(folders).set({ name }).where(eq(folders.id, id));
+  try {
+    const [folder] = await db.select().from(folders).where(eq(folders.id, id)).limit(1);
+    if (!folder) return { ok: false, error: "Folder not found." };
+    await db.update(folders).set({ name }).where(eq(folders.id, id));
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "updated",
+      entityKind: "folder",
+      entityId: id,
+      summary: `${user.name} renamed a folder to "${name}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to rename folder." };
+  }
   revalidatePath("/documents");
   return { ok: true };
 }
 
 export async function deleteFolder(form: FormData): Promise<ActionResult> {
-  await requireManager();
+  const user = await requireManager();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing folder id." };
-  // child folders/documents are detached via ON DELETE rules in the schema.
-  await db.delete(folders).where(eq(folders.id, id));
+  try {
+    const [folder] = await db.select().from(folders).where(eq(folders.id, id)).limit(1);
+    if (!folder) return { ok: false, error: "Folder not found." };
+    // child folders/documents are detached via ON DELETE rules in the schema.
+    await db.delete(folders).where(eq(folders.id, id));
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "deleted",
+      entityKind: "folder",
+      entityId: id,
+      summary: `${user.name} deleted folder "${folder.name}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete folder." };
+  }
   revalidatePath("/documents");
   return { ok: true };
 }
@@ -69,30 +109,47 @@ export async function deleteDocument(form: FormData): Promise<ActionResult> {
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing document id." };
 
-  const [doc] = await db.select().from(documents).where(eq(documents.id, id)).limit(1);
-  if (!doc) return { ok: false, error: "Document not found." };
+  try {
+    const [doc] = await db.select().from(documents).where(eq(documents.id, id)).limit(1);
+    if (!doc) return { ok: false, error: "Document not found." };
 
-  await db.delete(documents).where(eq(documents.id, id));
-  await removeStoredFile(doc.storagePath);
+    await db.delete(documents).where(eq(documents.id, id));
+    await removeStoredFile(doc.storagePath);
 
-  await db.insert(activities).values({
-    actorId: user.id,
-    verb: "deleted",
-    entityKind: "document",
-    entityId: id,
-    summary: `${user.name} deleted ${doc.name}`,
-  });
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "deleted",
+      entityKind: "document",
+      entityId: id,
+      summary: `${user.name} deleted ${doc.name}`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete document." };
+  }
 
   revalidatePath("/documents");
   return { ok: true };
 }
 
 export async function moveDocument(form: FormData): Promise<ActionResult> {
-  await requireWrite();
+  const user = await requireWrite();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing document id." };
   const folderId = clean(form.get("folderId"));
-  await db.update(documents).set({ folderId }).where(eq(documents.id, id));
+  try {
+    const [doc] = await db.select().from(documents).where(eq(documents.id, id)).limit(1);
+    if (!doc) return { ok: false, error: "Document not found." };
+    await db.update(documents).set({ folderId }).where(eq(documents.id, id));
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "updated",
+      entityKind: "document",
+      entityId: id,
+      summary: `${user.name} moved ${doc.name}`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to move document." };
+  }
   revalidatePath("/documents");
   return { ok: true };
 }
@@ -139,40 +196,59 @@ export async function createDocumentRequest(
 
   const magicToken = nanoid(32);
 
-  const [row] = await db
-    .insert(documentRequests)
-    .values({
-      title,
-      message,
-      organizationId,
-      contactId,
-      workItemId,
-      items: labels.map((label) => ({ label, fulfilled: false })),
-      status: "open",
-      magicToken,
-      expiresAt,
-      createdById: user.id,
-    })
-    .returning({ id: documentRequests.id });
+  let row;
+  try {
+    [row] = await db
+      .insert(documentRequests)
+      .values({
+        title,
+        message,
+        organizationId,
+        contactId,
+        workItemId,
+        items: labels.map((label) => ({ label, fulfilled: false })),
+        status: "open",
+        magicToken,
+        expiresAt,
+        createdById: user.id,
+      })
+      .returning({ id: documentRequests.id });
+    if (!row) return { ok: false, error: "Document request could not be created." };
 
-  await db.insert(activities).values({
-    actorId: user.id,
-    verb: "created",
-    entityKind: "document",
-    entityId: row.id,
-    summary: `${user.name} created document request "${title}"`,
-    meta: { items: labels.length },
-  });
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "created",
+      entityKind: "document",
+      entityId: row.id,
+      summary: `${user.name} created document request "${title}"`,
+      meta: { items: labels.length },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Document request could not be created." };
+  }
 
   revalidatePath("/documents/requests");
   return { ok: true, data: { id: row.id, token: magicToken } };
 }
 
 export async function deleteDocumentRequest(form: FormData): Promise<ActionResult> {
-  await requireManager();
+  const user = await requireManager();
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing request id." };
-  await db.delete(documentRequests).where(eq(documentRequests.id, id));
+  try {
+    const [req] = await db.select().from(documentRequests).where(eq(documentRequests.id, id)).limit(1);
+    if (!req) return { ok: false, error: "Request not found." };
+    await db.delete(documentRequests).where(eq(documentRequests.id, id));
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "deleted",
+      entityKind: "document_request",
+      entityId: id,
+      summary: `${user.name} deleted document request "${req.title}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete document request." };
+  }
   revalidatePath("/documents/requests");
   return { ok: true };
 }

@@ -28,35 +28,47 @@ export async function GET(req: Request) {
   const conds = [];
   if (status && status !== "all") conds.push(eq(fileEvents.status, status));
   if (org) conds.push(eq(fileEvents.organizationId, org));
-  if (before) conds.push(lt(fileEvents.detectedAt, new Date(Number(before))));
+  if (before) {
+    // Reject a non-numeric cursor instead of silently returning 0 rows (NaN ms
+    // → Invalid Date → lt() matches nothing).
+    const beforeMs = Number(before);
+    if (!Number.isFinite(beforeMs)) {
+      return NextResponse.json({ error: "Invalid `before` cursor." }, { status: 400 });
+    }
+    conds.push(lt(fileEvents.detectedAt, new Date(beforeMs)));
+  }
 
-  const rows = await db
-    .select({
-      id: fileEvents.id,
-      event: fileEvents.event,
-      filePath: fileEvents.filePath,
-      fileName: fileEvents.fileName,
-      sizeBytes: fileEvents.sizeBytes,
-      status: fileEvents.status,
-      organizationId: fileEvents.organizationId,
-      workItemId: fileEvents.workItemId,
-      acknowledgedById: fileEvents.acknowledgedById,
-      acknowledgedAt: fileEvents.acknowledgedAt,
-      detectedAt: fileEvents.detectedAt,
-      clientName: organizations.name,
-      ruleName: fileRules.name,
-      severity: fileRules.severity,
-    })
-    .from(fileEvents)
-    .leftJoin(organizations, eq(fileEvents.organizationId, organizations.id))
-    .leftJoin(fileRules, eq(fileEvents.ruleId, fileRules.id))
-    .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(fileEvents.detectedAt))
-    .limit(limit + 1);
+  try {
+    const rows = await db
+      .select({
+        id: fileEvents.id,
+        event: fileEvents.event,
+        filePath: fileEvents.filePath,
+        fileName: fileEvents.fileName,
+        sizeBytes: fileEvents.sizeBytes,
+        status: fileEvents.status,
+        organizationId: fileEvents.organizationId,
+        workItemId: fileEvents.workItemId,
+        acknowledgedById: fileEvents.acknowledgedById,
+        acknowledgedAt: fileEvents.acknowledgedAt,
+        detectedAt: fileEvents.detectedAt,
+        clientName: organizations.name,
+        ruleName: fileRules.name,
+        severity: fileRules.severity,
+      })
+      .from(fileEvents)
+      .leftJoin(organizations, eq(fileEvents.organizationId, organizations.id))
+      .leftJoin(fileRules, eq(fileEvents.ruleId, fileRules.id))
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(fileEvents.detectedAt))
+      .limit(limit + 1);
 
-  const hasMore = rows.length > limit;
-  const items = rows.slice(0, limit);
-  const nextCursor = hasMore ? items[items.length - 1]?.detectedAt?.getTime() : null;
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    const nextCursor = hasMore ? items[items.length - 1]?.detectedAt?.getTime() : null;
 
-  return NextResponse.json({ items, hasMore, nextCursor });
+    return NextResponse.json({ items, hasMore, nextCursor });
+  } catch {
+    return NextResponse.json({ error: "Failed to fetch alerts." }, { status: 500 });
+  }
 }

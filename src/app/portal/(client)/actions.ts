@@ -18,6 +18,7 @@ import {
   hashPassword,
   verifyPassword,
 } from "@/lib/portal-auth";
+import { DUMMY_PASSWORD_HASH } from "@/lib/password";
 import { checkRateLimit } from "@/app/api/documents/_ratelimit";
 
 const { portalUsers } = schema;
@@ -68,17 +69,31 @@ export async function loginAction(_prev: AuthState, formData: FormData): Promise
     return { error: "Too many attempts. Please wait a few minutes and try again." };
   }
 
-  const [pu] = await db
-    .select()
-    .from(portalUsers)
-    .where(eq(portalUsers.email, email))
-    .limit(1);
+  let pu;
+  try {
+    [pu] = await db
+      .select()
+      .from(portalUsers)
+      .where(eq(portalUsers.email, email))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal] loginAction lookup error:", err);
+    return { error: "An error occurred. Please try again." };
+  }
 
   const GENERIC = { error: "Incorrect email or password." } as const;
-  if (!pu || !pu.active || !pu.passwordHash) return GENERIC;
-  if (!verifyPassword(password, pu.passwordHash)) return GENERIC;
+  // Always run scrypt (against a dummy hash when the account is missing/inactive)
+  // so a non-existent email isn't distinguishable by response timing.
+  const usable = pu && pu.active && pu.passwordHash;
+  const ok = verifyPassword(password, usable ? pu.passwordHash : DUMMY_PASSWORD_HASH);
+  if (!usable || !ok) return GENERIC;
 
-  await createPortalSession(pu.id);
+  try {
+    await createPortalSession(pu.id);
+  } catch (err) {
+    console.error("[portal] loginAction session error:", err);
+    return { error: "Couldn't start your session. Please try again." };
+  }
   redirect("/portal/dashboard");
 }
 
@@ -105,27 +120,49 @@ export async function acceptInviteAction(_prev: AuthState, formData: FormData): 
   const rl = checkRateLimit(`portal-invite:${ip}`, 15, 10 * 60_000);
   if (!rl.ok) return { error: "Too many attempts. Please wait and try again." };
 
-  const [pu] = await db
-    .select()
-    .from(portalUsers)
-    .where(eq(portalUsers.inviteToken, token))
-    .limit(1);
-
-  if (!pu || !pu.active) return { error: "This invite link is invalid." };
-  if (pu.inviteExpiresAt && pu.inviteExpiresAt.getTime() < Date.now()) {
-    return { error: "This invite link has expired. Ask your accountant for a new one." };
+  // Consume the one-time token atomically: validate and clear it in a single
+  // transaction, with the token in the UPDATE's WHERE so two concurrent accepts
+  // can't both succeed (TOCTOU → account takeover). The losing request's UPDATE
+  // matches zero rows once the token is nulled.
+  let portalUserId: string;
+  try {
+    const result = db.transaction((tx) => {
+      const [pu] = tx
+        .select()
+        .from(portalUsers)
+        .where(eq(portalUsers.inviteToken, token))
+        .limit(1)
+        .all();
+      if (!pu || !pu.active) return { ok: false as const, error: "This invite link is invalid." };
+      if (pu.inviteExpiresAt && pu.inviteExpiresAt.getTime() < Date.now()) {
+        return { ok: false as const, error: "This invite link has expired. Ask your accountant for a new one." };
+      }
+      const updated = tx
+        .update(portalUsers)
+        .set({
+          passwordHash: hashPassword(password),
+          inviteToken: null,
+          inviteExpiresAt: null,
+        })
+        .where(eq(portalUsers.inviteToken, token))
+        .returning({ id: portalUsers.id })
+        .all();
+      if (!updated.length) return { ok: false as const, error: "This invite link is invalid." };
+      return { ok: true as const, portalUserId: updated[0].id };
+    });
+    if (!result.ok) return { error: result.error };
+    portalUserId = result.portalUserId;
+  } catch (err) {
+    console.error("[portal] acceptInviteAction error:", err);
+    return { error: "An error occurred. Please try again." };
   }
 
-  await db
-    .update(portalUsers)
-    .set({
-      passwordHash: hashPassword(password),
-      inviteToken: null,
-      inviteExpiresAt: null,
-    })
-    .where(eq(portalUsers.id, pu.id));
-
-  await createPortalSession(pu.id);
+  try {
+    await createPortalSession(portalUserId);
+  } catch (err) {
+    console.error("[portal] acceptInviteAction session error:", err);
+    return { error: "Couldn't start your session. Please try again." };
+  }
   redirect("/portal/dashboard");
 }
 

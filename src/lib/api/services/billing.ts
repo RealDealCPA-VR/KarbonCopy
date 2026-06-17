@@ -7,6 +7,7 @@ import { z } from "zod";
 import { and, desc, eq, like } from "drizzle-orm";
 import { db, schema, type Actor, requireWrite, parse, logActivity, pagination } from "./_base";
 import { notFound, validation } from "@/lib/api/errors";
+import { computeTotals, deriveStatus } from "@/lib/billing";
 import type { InvoiceStatus } from "@/db/schema";
 
 const { invoices, invoiceLines, payments, organizations } = schema;
@@ -27,7 +28,9 @@ const PAYMENT_METHODS = ["card", "ach", "check", "cash", "wire", "manual"] as co
 const lineInput = z.object({
   description: z.string().trim().min(1).max(500),
   quantity: z.number().min(0).default(1),
-  unitCents: z.number().int(),
+  // No negative unit prices: a negative line would zero/negate the total and
+  // deriveStatus would then mark the invoice "paid" with no real payment.
+  unitCents: z.number().int().min(0),
 });
 
 const createInvoiceInput = z.object({
@@ -35,7 +38,9 @@ const createInvoiceInput = z.object({
   issueDate: dateCoerce.optional(),
   dueDate: dateCoerce.optional(),
   lines: z.array(lineInput).min(1),
-  taxCents: z.number().int().min(0).default(0),
+  // Tax as basis points (e.g. 825 = 8.25%); applied to (subtotal − discount) so
+  // the API can't be fed an arbitrary pre-computed taxCents that corrupts totals.
+  taxBps: z.number().int().min(0).max(10000).default(0),
   discountCents: z.number().int().min(0).default(0),
   notes: z.string().max(5000).optional(),
   terms: z.string().max(2000).optional(),
@@ -156,9 +161,16 @@ export async function createInvoice(actor: Actor, input: unknown) {
       position: i,
     };
   });
-  const subtotalCents = lineRows.reduce((sum, l) => sum + l.amountCents, 0);
-  const totalCents = subtotalCents + data.taxCents - data.discountCents;
-  if (totalCents < 0) throw validation("Invoice total cannot be negative");
+  // Recompute every figure server-side from the lines + rate (never trust a
+  // caller-supplied taxCents/totalCents). Mirrors the UI's computeTotals path.
+  const totals = computeTotals(
+    lineRows.map((l) => ({ description: l.description, quantity: l.quantity, unitCents: l.unitCents })),
+    { taxBps: data.taxBps, discountCents: data.discountCents },
+  );
+  const subtotalCents = totals.subtotalCents;
+  const taxCents = totals.taxCents;
+  const discountCents = totals.discountCents;
+  const totalCents = totals.totalCents;
 
   const year = (data.issueDate ?? new Date()).getFullYear();
   const prefix = `INV-${year}-`;
@@ -186,8 +198,8 @@ export async function createInvoice(actor: Actor, input: unknown) {
         issueDate: data.issueDate ?? null,
         dueDate: data.dueDate ?? null,
         subtotalCents,
-        taxCents: data.taxCents,
-        discountCents: data.discountCents,
+        taxCents,
+        discountCents,
         totalCents,
         notes: data.notes || null,
         terms: data.terms || null,
@@ -195,6 +207,7 @@ export async function createInvoice(actor: Actor, input: unknown) {
       })
       .returning()
       .all();
+    if (!inv) throw notFound("Invoice");
 
     const insertedLines = tx
       .insert(invoiceLines)
@@ -215,40 +228,57 @@ export async function createInvoice(actor: Actor, input: unknown) {
 export async function recordPayment(actor: Actor, input: unknown) {
   requireWrite(actor);
   const data = parse(recordPaymentInput, input);
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, data.invoiceId)).limit(1);
-  if (!inv) throw notFound("Invoice");
-
-  const newPaid = inv.amountPaidCents + data.amountCents;
-  let status: InvoiceStatus = inv.status;
-  if (newPaid >= inv.totalCents && inv.totalCents > 0) status = "paid";
-  else if (newPaid > 0) status = "partial";
   const now = new Date();
 
-  const [pay] = await db
-    .insert(payments)
-    .values({
-      invoiceId: inv.id,
-      organizationId: inv.organizationId,
-      amountCents: data.amountCents,
-      method: data.method,
-      reference: data.reference || null,
-      createdById: actor.id,
-    })
-    .returning();
+  // Read the invoice + insert payment + update its balance atomically (sync tx),
+  // reading amountPaidCents INSIDE the tx so concurrent payments can't lose an
+  // update. logActivity (async) runs after the tx.
+  const { pay, invNumber } = db.transaction((tx) => {
+    const inv = tx.select().from(invoices).where(eq(invoices.id, data.invoiceId)).limit(1).all()[0];
+    if (!inv) throw notFound("Invoice");
+    // Match the UI + webhook paths: a voided invoice can't take payments.
+    if (inv.status === "void") throw validation("Can't record a payment on a voided invoice.");
 
-  await db
-    .update(invoices)
-    .set({
+    const newPaid = inv.amountPaidCents + data.amountCents;
+    const status = deriveStatus({
+      current: inv.status === "draft" ? "sent" : inv.status,
+      totalCents: inv.totalCents,
       amountPaidCents: newPaid,
-      status,
-      paidAt: status === "paid" ? now : inv.paidAt,
-      updatedAt: now,
-    })
-    .where(eq(invoices.id, inv.id));
+      dueDate: inv.dueDate,
+    });
+
+    const [p] = tx
+      .insert(payments)
+      .values({
+        invoiceId: inv.id,
+        organizationId: inv.organizationId,
+        amountCents: data.amountCents,
+        method: data.method,
+        reference: data.reference || null,
+        createdById: actor.id,
+      })
+      .returning()
+      .all();
+    if (!p) throw notFound("Payment");
+
+    tx.update(invoices)
+      .set({
+        amountPaidCents: newPaid,
+        status,
+        // Preserve the original paid timestamp on later payments (match the UI +
+        // webhook paths) instead of overwriting it with the current time.
+        paidAt: status === "paid" ? (inv.paidAt ?? now) : inv.paidAt,
+        updatedAt: now,
+      })
+      .where(eq(invoices.id, inv.id))
+      .run();
+
+    return { pay: p, invNumber: inv.number };
+  });
 
   await logActivity({
     actorId: actor.id, verb: "created", entityKind: "payment", entityId: pay.id,
-    summary: `${actor.name} recorded a ${data.amountCents}¢ payment on invoice ${inv.number} (via API)`,
+    summary: `${actor.name} recorded a ${data.amountCents}¢ payment on invoice ${invNumber} (via API)`,
   });
   return presentPayment(pay);
 }

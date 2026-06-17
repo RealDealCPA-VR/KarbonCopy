@@ -92,7 +92,7 @@ client) at it and *talk to your practice*: "create a client for Riverside Dental
 monthly bookkeeping job, and draft a $1,200 invoice." Two ways in, one shared, RBAC-enforced
 service layer:
 
-- 🔌 **Built-in MCP server** (`pnpm mcp`) — 22 tools (`create_client`, `create_work`, `log_time`,
+- 🔌 **Built-in MCP server** (`pnpm mcp`) — 28 tools (`create_client`, `create_work`, `log_time`,
   `create_invoice`, `record_payment`, `create_deadline`, `search`, …). Add it to Claude in 30
   seconds — see [`MCP.md`](./MCP.md).
 - 🌐 **`/api/v1` REST API** — key-authenticated CRUD over every entity, for scripts & automations.

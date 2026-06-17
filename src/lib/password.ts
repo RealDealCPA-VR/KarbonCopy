@@ -14,3 +14,10 @@ export function verifyPassword(password: string, stored: string | null): boolean
   const original = Buffer.from(hash, "hex");
   return original.length === candidate.length && timingSafeEqual(original, candidate);
 }
+
+/**
+ * A valid-format hash of a random secret nobody will ever submit. Verify against
+ * this when the account doesn't exist so login stays constant-time and can't be
+ * used to enumerate valid emails by timing the scrypt work.
+ */
+export const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(32).toString("hex"));

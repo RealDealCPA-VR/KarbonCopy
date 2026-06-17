@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `deadlines_org_rule_period_idx` ON `compliance_deadlines` (`organization_id`,`rule_key`,`tax_period`);

@@ -7,19 +7,25 @@ import { NextResponse, type NextRequest } from "next/server";
 // enforce their own client-session auth (kc_portal) where needed.
 const PUBLIC = [
   "/login", "/portal", "/api/portal", "/api/webhooks", "/healthz",
-  "/_next", "/favicon", "/api/socket",
+  "/_next", "/favicon", "/socket.io",
   // /api/v1 authenticates by API key (Bearer / X-API-Key), not the staff cookie.
   "/api/v1",
 ];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (PUBLIC.some((p) => pathname.startsWith(p))) return NextResponse.next();
+  // Exact match or a proper path-segment prefix only — so `/portal` and
+  // `/portal/...` are public but `/portalx` is NOT (which would otherwise slip
+  // a staff route past the gate).
+  if (PUBLIC.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
+    return NextResponse.next();
+  }
 
   const hasSession = req.cookies.has("kc_session");
   if (!hasSession) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
+    url.search = "";
     return NextResponse.redirect(url);
   }
   return NextResponse.next();

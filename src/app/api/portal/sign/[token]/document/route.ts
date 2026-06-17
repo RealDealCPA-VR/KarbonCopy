@@ -30,18 +30,24 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     );
   }
 
-  const [request] = await db
-    .select({
-      status: schema.signatureRequests.status,
-      expiresAt: schema.signatureRequests.expiresAt,
-      docName: schema.documents.name,
-      storagePath: schema.documents.storagePath,
-      mimeType: schema.documents.mimeType,
-    })
-    .from(schema.signatureRequests)
-    .leftJoin(schema.documents, eq(schema.signatureRequests.documentId, schema.documents.id))
-    .where(eq(schema.signatureRequests.magicToken, token))
-    .limit(1);
+  let request;
+  try {
+    [request] = await db
+      .select({
+        status: schema.signatureRequests.status,
+        expiresAt: schema.signatureRequests.expiresAt,
+        docName: schema.documents.name,
+        storagePath: schema.documents.storagePath,
+        mimeType: schema.documents.mimeType,
+      })
+      .from(schema.signatureRequests)
+      .leftJoin(schema.documents, eq(schema.signatureRequests.documentId, schema.documents.id))
+      .where(eq(schema.signatureRequests.magicToken, token))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/sign/document] lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load document." }, { status: 500 });
+  }
 
   if (!request || !request.storagePath) {
     return NextResponse.json({ error: "Document not found." }, { status: 404 });

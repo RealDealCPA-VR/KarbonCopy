@@ -110,9 +110,11 @@ export function ApprovalsTab({
         const allChecked = groupIds.every((id) => selected.has(id));
         const someChecked = groupIds.some((id) => selected.has(id));
         const totalMinutes = g.entries.reduce((s, e) => s + e.minutes, 0);
-        const billableCents = g.entries.reduce(
-          (s, e) => s + (e.billable ? e.minutes * (e.rateCents ?? defaultRateCents) : 0),
-          0,
+        const billableCents = Math.round(
+          g.entries.reduce(
+            (s, e) => s + (e.billable ? (e.minutes / 60) * (e.rateCents ?? defaultRateCents) : 0),
+            0,
+          ),
         );
         return (
           <Card key={g.userId}>

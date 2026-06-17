@@ -12,6 +12,11 @@ export const dynamic = "force-dynamic";
  * programmatic/beacon logout (e.g. on tab close). Idempotent.
  */
 export async function POST() {
-  await destroyPortalSession();
+  try {
+    await destroyPortalSession();
+  } catch (err) {
+    console.error("[portal/logout] failed:", (err as Error).message);
+    return NextResponse.json({ error: "Logout failed." }, { status: 500 });
+  }
   return NextResponse.json({ ok: true });
 }

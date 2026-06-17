@@ -46,7 +46,12 @@ export async function createPortalSession(portalUserId: string): Promise<void> {
   jar.set(PORTAL_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    // The portal is internet-facing (served over HTTPS via the tunnel), so the
+    // cookie is secure by default. Defaults on in production; opt out only with
+    // COOKIE_SECURE=false (e.g. local HTTP testing).
+    secure:
+      process.env.COOKIE_SECURE === "true" ||
+      (process.env.COOKIE_SECURE !== "false" && process.env.NODE_ENV === "production"),
     path: "/",
     expires: expiresAt,
   });

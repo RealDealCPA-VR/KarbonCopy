@@ -29,9 +29,11 @@ export async function handle<T>(req: Request, fn: Handler<T>, status = 200): Pro
         { status: err.status },
       );
     }
-    const message = err instanceof Error ? err.message : "Unexpected error";
+    // Don't leak raw error text (SQLite constraint names, table names, stack
+    // traces) to an internet-facing API client. Log the detail; return generic.
+    console.error("[api/v1] unhandled error:", err instanceof Error ? err.message : err);
     return NextResponse.json(
-      { error: { code: "internal", message } },
+      { error: { code: "internal", message: "An unexpected error occurred." } },
       { status: 500 },
     );
   }

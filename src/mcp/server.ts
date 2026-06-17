@@ -194,6 +194,44 @@ const tools: ToolDef[] = [
     },
     handler: (actor, a) => contacts.createContact(actor, a),
   },
+  {
+    name: "get_contact",
+    description: "Get a single contact by id.",
+    inputSchema: idSchema("contact"),
+    handler: (actor, a) => contacts.getContact(actor, String(a.id)),
+  },
+  {
+    name: "update_contact",
+    description: "Update a contact by id. Requires staff role or higher.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: str("Contact id (required)"),
+        firstName: str("First name"),
+        lastName: str("Last name"),
+        email: str("Email"),
+        phone: str("Phone"),
+        title: str("Job title"),
+        organizationId: str("Linked organization (client) id"),
+        isPrimary: bool("Primary contact for the organization"),
+        portalEnabled: bool("Client-portal access"),
+        notes: str("Notes"),
+        ownerId: str("Owning user id"),
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: (actor, a) => {
+      const { id, ...patch } = a;
+      return contacts.updateContact(actor, String(id), patch);
+    },
+  },
+  {
+    name: "delete_contact",
+    description: "Delete (archive) a contact by id. Requires manager role or higher.",
+    inputSchema: idSchema("contact"),
+    handler: (actor, a) => contacts.deleteContact(actor, String(a.id)),
+  },
 
   /* ----------------------------- work ------------------------------------ */
   {
@@ -240,6 +278,33 @@ const tools: ToolDef[] = [
       additionalProperties: false,
     },
     handler: (actor, a) => work.createWorkItem(actor, a),
+  },
+  {
+    name: "update_work",
+    description: "Update a work item by id. Requires staff role or higher.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: str("Work item id (required)"),
+        title: str("Work item title"),
+        description: str("Description"),
+        workTypeId: str("Work type id (see list_reference)"),
+        statusId: str("Work status id (see list_reference)"),
+        organizationId: str("Client (organization) id"),
+        contactId: str("Linked contact id"),
+        assigneeId: str("Assignee user id"),
+        priority: str("One of: low, normal, high, urgent"),
+        startDate: { ...dateField, description: "Start date — " + dateField.description },
+        dueDate: { ...dateField, description: "Due date — " + dateField.description },
+        budgetMinutes: num("Budgeted minutes"),
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: (actor, a) => {
+      const { id, ...patch } = a;
+      return work.updateWorkItem(actor, String(id), patch);
+    },
   },
   {
     name: "complete_work",
@@ -364,7 +429,7 @@ const tools: ToolDef[] = [
             additionalProperties: false,
           },
         },
-        taxCents: num("Tax in integer cents (default 0)"),
+        taxBps: num("Tax in basis points, e.g. 825 = 8.25% (default 0)"),
         discountCents: num("Discount in integer cents (default 0)"),
         notes: str("Notes"),
         terms: str("Payment terms"),
@@ -424,6 +489,34 @@ const tools: ToolDef[] = [
       additionalProperties: false,
     },
     handler: (actor, a) => deadlines.createDeadline(actor, a),
+  },
+  {
+    name: "get_deadline",
+    description: "Get a single compliance deadline by id.",
+    inputSchema: idSchema("deadline"),
+    handler: (actor, a) => deadlines.getDeadline(actor, String(a.id)),
+  },
+  {
+    name: "update_deadline",
+    description: "Update a compliance deadline by id. Requires staff role or higher.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: str("Deadline id (required)"),
+        name: str("Deadline name"),
+        dueDate: { ...dateField, description: "Due date — " + dateField.description },
+        form: str("Form (e.g. 1120, 1040)"),
+        jurisdiction: str("Jurisdiction"),
+        taxPeriod: str("Tax period"),
+        status: str("One of: upcoming, in_progress, filed, extended, missed, na"),
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: (actor, a) => {
+      const { id, ...patch } = a;
+      return deadlines.updateDeadline(actor, String(id), patch);
+    },
   },
 
   /* ----------------------------- reference + search ---------------------- */

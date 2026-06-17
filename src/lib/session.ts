@@ -42,3 +42,16 @@ export async function pruneExpiredSessions(): Promise<void> {
     /* non-fatal */
   }
 }
+
+/**
+ * Best-effort cleanup of expired client-portal sessions. Lives here (not in
+ * portal-auth.ts) so server.ts can call it without importing the "server-only"
+ * portal-auth module.
+ */
+export async function pruneExpiredPortalSessions(): Promise<void> {
+  try {
+    await db.delete(schema.portalSessions).where(lt(schema.portalSessions.expiresAt, new Date()));
+  } catch {
+    /* non-fatal */
+  }
+}

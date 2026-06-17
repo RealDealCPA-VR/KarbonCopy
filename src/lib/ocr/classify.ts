@@ -122,7 +122,8 @@ const ACCT_TAIL = /(?:account|acct)[^\d]{0,12}(?:no\.?|number|#|ending in)?[^\d]
 
 /**
  * Extract a small, safe set of fields from OCR text. We deliberately avoid
- * surfacing full SSNs — only last-4 if already masked on the doc.
+ * persisting full tax IDs at rest — SSN and EIN are reduced to last-4 only
+ * (the full EIN belongs in organizations.ein, which is encrypted).
  */
 export function extractFields(text: string, docType: DocType): Record<string, unknown> {
   const t = text || "";
@@ -132,7 +133,10 @@ export function extractFields(text: string, docType: DocType): Record<string, un
   if (yr) fields.taxYear = yr;
 
   const ein = t.match(EIN)?.[1];
-  if (ein) fields.ein = ein;
+  if (ein) {
+    const digits = ein.replace(/\D/g, "");
+    if (digits.length >= 4) fields.einLast4 = digits.slice(-4);
+  }
 
   const ssn4 = t.match(SSN_MASKED)?.[1];
   if (ssn4) fields.ssnLast4 = ssn4;

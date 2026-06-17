@@ -14,6 +14,9 @@ import type {
 
 const { watchedRoots, fileRules, users, automators, settings, activities } = schema;
 
+const AVAILABLE_AUTOMATOR_TRIGGERS = ["status_changed", "work_created", "task_completed", "due_approaching", "all_tasks_done"];
+const AVAILABLE_AUTOMATOR_ACTIONS = ["set_status", "assign", "notify", "create_task", "create_work"];
+
 export type ActionResult<T = undefined> =
   | { ok: true; data?: T }
   | { ok: false; error: string };
@@ -39,6 +42,20 @@ function fail(err: unknown): { ok: false; error: string } {
   return { ok: false, error: msg };
 }
 
+/**
+ * Validate a file-rule `notify` value. Arrays hold user ids (must be active
+ * users, else the watcher's notification insert fails the FK silently); the
+ * special strings "owner"/"all" are resolved at fire time and need no check.
+ */
+async function invalidNotify(notify: string[] | string | undefined | null): Promise<string | null> {
+  if (!Array.isArray(notify) || notify.length === 0) return null;
+  const valid = new Set(
+    (await db.select({ id: users.id }).from(users).where(eq(users.active, true))).map((u) => u.id),
+  );
+  const bad = notify.filter((id) => !valid.has(id));
+  return bad.length ? `Some notify recipients aren't active users: ${bad.join(", ")}` : null;
+}
+
 /* ------------------------------------------------------------------ */
 /* Watched roots                                                       */
 /* ------------------------------------------------------------------ */
@@ -62,6 +79,7 @@ export async function createWatchedRoot(input: {
         matchOrgByFolder: input.matchOrgByFolder,
       })
       .returning({ id: watchedRoots.id });
+    if (!row) throw new Error("Watched folder could not be created.");
     await audit(user.id, "created", `Added watched folder “${input.label}”`);
     revalidatePath("/settings");
     return { ok: true, data: { id: row.id } };
@@ -76,7 +94,8 @@ export async function updateWatchedRoot(
 ): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.update(watchedRoots).set(patch).where(eq(watchedRoots.id, id));
+    const [row] = await db.update(watchedRoots).set(patch).where(eq(watchedRoots.id, id)).returning({ id: watchedRoots.id });
+    if (!row) return { ok: false, error: "Watched folder not found." };
     await audit(user.id, "updated", `Updated watched folder`);
     revalidatePath("/settings");
     return { ok: true };
@@ -88,7 +107,8 @@ export async function updateWatchedRoot(
 export async function deleteWatchedRoot(id: string): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.delete(watchedRoots).where(eq(watchedRoots.id, id));
+    const [row] = await db.delete(watchedRoots).where(eq(watchedRoots.id, id)).returning({ id: watchedRoots.id });
+    if (!row) return { ok: false, error: "Watched folder not found." };
     await audit(user.id, "deleted", `Removed watched folder`);
     revalidatePath("/settings");
     return { ok: true };
@@ -115,6 +135,8 @@ export async function createFileRule(input: {
     const user = await requireAdmin();
     if (!input.name.trim() || !input.globPattern.trim() || !input.rootId)
       return { ok: false, error: "Name, pattern and root are required" };
+    const notifyErr = await invalidNotify(input.notify);
+    if (notifyErr) return { ok: false, error: notifyErr };
     const [row] = await db
       .insert(fileRules)
       .values({
@@ -128,6 +150,7 @@ export async function createFileRule(input: {
         enabled: input.enabled,
       })
       .returning({ id: fileRules.id });
+    if (!row) throw new Error("File rule could not be created.");
     await audit(user.id, "created", `Added file rule “${input.name}”`);
     revalidatePath("/settings");
     return { ok: true, data: { id: row.id } };
@@ -150,7 +173,12 @@ export async function updateFileRule(
 ): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.update(fileRules).set(patch).where(eq(fileRules.id, id));
+    if (patch.notify !== undefined) {
+      const notifyErr = await invalidNotify(patch.notify);
+      if (notifyErr) return { ok: false, error: notifyErr };
+    }
+    const [row] = await db.update(fileRules).set(patch).where(eq(fileRules.id, id)).returning({ id: fileRules.id });
+    if (!row) return { ok: false, error: "File rule not found." };
     await audit(user.id, "updated", `Updated file rule`);
     revalidatePath("/settings");
     return { ok: true };
@@ -162,7 +190,8 @@ export async function updateFileRule(
 export async function deleteFileRule(id: string): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.delete(fileRules).where(eq(fileRules.id, id));
+    const [row] = await db.delete(fileRules).where(eq(fileRules.id, id)).returning({ id: fileRules.id });
+    if (!row) return { ok: false, error: "File rule not found." };
     await audit(user.id, "deleted", `Removed file rule`);
     revalidatePath("/settings");
     return { ok: true };
@@ -206,6 +235,7 @@ export async function createUser(input: {
         weeklyCapacityMinutes: input.weeklyCapacityMinutes ?? 2400,
       })
       .returning({ id: users.id });
+    if (!row) throw new Error("User could not be created.");
     await audit(user.id, "created", `Added user ${name} (${input.role})`);
     revalidatePath("/settings");
     return { ok: true, data: { id: row.id } };
@@ -225,10 +255,12 @@ export async function updateUser(
     // guard: don't let an admin lock themselves out of their own account
     if (id === user.id && patch.active === false)
       return { ok: false, error: "You can't deactivate your own account" };
-    await db
+    const [row] = await db
       .update(users)
       .set({ ...patch, updatedAt: new Date() })
-      .where(eq(users.id, id));
+      .where(eq(users.id, id))
+      .returning({ id: users.id });
+    if (!row) return { ok: false, error: "User not found." };
     // Force re-auth if the user's role or active status changed (demoted/deactivated
     // users should be logged out everywhere). Never invalidate the acting admin's own
     // sessions — the self-deactivate guard above already prevents that case.
@@ -248,10 +280,12 @@ export async function resetUserPassword(id: string, password: string): Promise<A
     const user = await requireAdmin();
     if (!password || password.length < 6)
       return { ok: false, error: "Password must be at least 6 characters" };
-    await db
+    const [row] = await db
       .update(users)
       .set({ passwordHash: hashPassword(password), updatedAt: new Date() })
-      .where(eq(users.id, id));
+      .where(eq(users.id, id))
+      .returning({ id: users.id });
+    if (!row) return { ok: false, error: "User not found." };
     // Log the user out everywhere so the old password's sessions can't continue.
     // Skip self so the admin isn't kicked out mid-reset (they keep their session).
     if (id !== user.id) {
@@ -280,6 +314,10 @@ export async function createAutomator(input: {
   try {
     const user = await requireAdmin();
     if (!input.name.trim()) return { ok: false, error: "Name is required" };
+    if (input.trigger && !AVAILABLE_AUTOMATOR_TRIGGERS.includes(input.trigger))
+      return { ok: false, error: "That trigger isn't available yet." };
+    if (input.action && !AVAILABLE_AUTOMATOR_ACTIONS.includes(input.action))
+      return { ok: false, error: "That action isn't available yet." };
     const [row] = await db
       .insert(automators)
       .values({
@@ -291,6 +329,7 @@ export async function createAutomator(input: {
         actionParams: input.actionParams ?? {},
       })
       .returning({ id: automators.id });
+    if (!row) throw new Error("Automator could not be created.");
     await audit(user.id, "created", `Added automator “${input.name}”`);
     revalidatePath("/settings");
     return { ok: true, data: { id: row.id } };
@@ -312,7 +351,12 @@ export async function updateAutomator(
 ): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.update(automators).set(patch).where(eq(automators.id, id));
+    if (patch.trigger && !AVAILABLE_AUTOMATOR_TRIGGERS.includes(patch.trigger))
+      return { ok: false, error: "That trigger isn't available yet." };
+    if (patch.action && !AVAILABLE_AUTOMATOR_ACTIONS.includes(patch.action))
+      return { ok: false, error: "That action isn't available yet." };
+    const [row] = await db.update(automators).set(patch).where(eq(automators.id, id)).returning({ id: automators.id });
+    if (!row) return { ok: false, error: "Automator not found." };
     await audit(user.id, "updated", `Updated automator`);
     revalidatePath("/settings");
     return { ok: true };
@@ -324,7 +368,8 @@ export async function updateAutomator(
 export async function deleteAutomator(id: string): Promise<ActionResult> {
   try {
     const user = await requireAdmin();
-    await db.delete(automators).where(eq(automators.id, id));
+    const [row] = await db.delete(automators).where(eq(automators.id, id)).returning({ id: automators.id });
+    if (!row) return { ok: false, error: "Automator not found." };
     await audit(user.id, "deleted", `Removed automator`);
     revalidatePath("/settings");
     return { ok: true };

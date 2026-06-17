@@ -70,7 +70,7 @@ export function TimesheetTab({
       total += e.minutes;
       if (e.billable) {
         billable += e.minutes;
-        amount += e.minutes * (e.rateCents ?? defaultRateCents);
+        amount += (e.minutes / 60) * (e.rateCents ?? defaultRateCents);
       }
     }
     return { total, billable, nonBillable: total - billable, amountCents: Math.round(amount) };

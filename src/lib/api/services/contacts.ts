@@ -6,8 +6,9 @@ import { z } from "zod";
 import { and, desc, eq, isNull, like, or } from "drizzle-orm";
 import { db, schema, type Actor, requireWrite, requireManager, parse, logActivity, pagination } from "./_base";
 import { notFound, validation } from "@/lib/api/errors";
+import { createPortalInvite } from "@/app/portal/(client)/invites";
 
-const { contacts, organizations } = schema;
+const { contacts, organizations, users, portalUsers, portalSessions } = schema;
 
 const createInput = z.object({
   firstName: z.string().trim().min(1).max(100),
@@ -54,6 +55,20 @@ async function assertOrgExists(organizationId: string) {
   if (!org || org.deletedAt) throw validation(`Organization ${organizationId} not found`);
 }
 
+async function assertUser(userId: string) {
+  const [u] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+  if (!u) throw validation(`User ${userId} not found`);
+}
+
+/** Deactivate any portal user for this contact and drop their sessions. */
+async function revokePortalAccess(contactId: string) {
+  const pus = await db.select({ id: portalUsers.id }).from(portalUsers).where(eq(portalUsers.contactId, contactId));
+  for (const pu of pus) {
+    await db.update(portalUsers).set({ active: false, inviteToken: null, inviteExpiresAt: null }).where(eq(portalUsers.id, pu.id));
+    await db.delete(portalSessions).where(eq(portalSessions.portalUserId, pu.id));
+  }
+}
+
 export async function listContacts(actor: Actor, input: unknown = {}) {
   const { limit, offset, search, organizationId } = parse(listInput, input);
   const where = and(
@@ -87,6 +102,11 @@ export async function createContact(actor: Actor, input: unknown) {
   requireWrite(actor);
   const data = parse(createInput, input);
   if (data.organizationId) await assertOrgExists(data.organizationId);
+  if (data.ownerId) await assertUser(data.ownerId);
+  // Portal access needs an email (the login identity) and provisioning below.
+  if (data.portalEnabled && !(data.email && data.email.trim())) {
+    throw validation("A contact email is required to enable portal access.");
+  }
   const [row] = await db
     .insert(contacts)
     .values({
@@ -102,6 +122,12 @@ export async function createContact(actor: Actor, input: unknown) {
       ownerId: data.ownerId || null,
     })
     .returning();
+  if (!row) throw notFound("Contact");
+  // Provision the portalUser + invite token so the flag actually grants access.
+  if (data.portalEnabled) {
+    const invite = await createPortalInvite(row.id);
+    if (!invite.ok) throw validation(invite.error);
+  }
   await logActivity({
     actorId: actor.id,
     verb: "created",
@@ -118,11 +144,33 @@ export async function updateContact(actor: Actor, id: string, input: unknown) {
   const [existing] = await db.select().from(contacts).where(eq(contacts.id, id)).limit(1);
   if (!existing || existing.deletedAt) throw notFound("Contact");
   if (data.organizationId) await assertOrgExists(data.organizationId);
+  if (data.ownerId) await assertUser(data.ownerId);
+
+  const enabling = data.portalEnabled === true && !existing.portalEnabled;
+  const disabling = data.portalEnabled === false && existing.portalEnabled;
+  if (enabling) {
+    const emailAfter = data.email !== undefined ? data.email : existing.email;
+    if (!(emailAfter && emailAfter.trim())) {
+      throw validation("A contact email is required to enable portal access.");
+    }
+  }
+
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   for (const k of ["firstName", "lastName", "email", "phone", "title", "organizationId", "isPrimary", "portalEnabled", "notes", "ownerId"] as const) {
     if (data[k] !== undefined) patch[k] = data[k] === "" ? null : data[k];
   }
   const [row] = await db.update(contacts).set(patch).where(eq(contacts.id, id)).returning();
+  if (!row) throw notFound("Contact");
+
+  // Keep portal provisioning in step with the flag (createPortalInvite also
+  // re-sets portalEnabled=true; revokePortalAccess tears the session down).
+  if (enabling) {
+    const invite = await createPortalInvite(row.id);
+    if (!invite.ok) throw validation(invite.error);
+  } else if (disabling) {
+    await revokePortalAccess(row.id);
+  }
+
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "contact", entityId: id,
     summary: `${actor.name} updated contact ${row.firstName} ${row.lastName} (via API)`,

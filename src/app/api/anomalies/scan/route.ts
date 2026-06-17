@@ -53,11 +53,17 @@ export async function POST(req: Request) {
   }
 
   // confirm the org exists (avoid FK insert errors / scanning ghosts)
-  const [org] = await db
-    .select({ id: schema.organizations.id })
-    .from(schema.organizations)
-    .where(eq(schema.organizations.id, organizationId))
-    .limit(1);
+  let org;
+  try {
+    [org] = await db
+      .select({ id: schema.organizations.id })
+      .from(schema.organizations)
+      .where(eq(schema.organizations.id, organizationId))
+      .limit(1);
+  } catch (err) {
+    console.error("[anomalies/scan] org lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Books scan failed. Please try again." }, { status: 502 });
+  }
   if (!org) {
     return NextResponse.json({ error: "Client not found" }, { status: 404 });
   }
@@ -78,11 +84,15 @@ export async function POST(req: Request) {
     source = body.source ?? "quickbooks";
   }
 
-  const summary = await scanTransactions(organizationId, txns, {
-    source,
-    config,
-    actorId: user?.id ?? null,
-  });
-
-  return NextResponse.json({ ok: true, summary, sample: useSample });
+  try {
+    const summary = await scanTransactions(organizationId, txns, {
+      source,
+      config,
+      actorId: user?.id ?? null,
+    });
+    return NextResponse.json({ ok: true, summary, sample: useSample });
+  } catch (err) {
+    console.error("[anomalies/scan] failed:", (err as Error).message);
+    return NextResponse.json({ error: "Books scan failed. Please try again." }, { status: 502 });
+  }
 }

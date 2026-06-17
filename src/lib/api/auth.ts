@@ -92,6 +92,7 @@ export async function createApiKey(opts: {
       expiresAt: opts.expiresAt ?? null,
     })
     .returning();
+  if (!row) throw new Error("API key could not be created.");
   return { raw, id: row.id, prefix: row.prefix };
 }
 

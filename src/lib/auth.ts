@@ -24,6 +24,10 @@ export async function createSession(userId: string) {
   jar.set(COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
+    // The staff app is normally served over plain HTTP on the LAN, so `secure`
+    // must default OFF (otherwise the browser drops the cookie and login breaks).
+    // Operators who front staff access with HTTPS can opt in via COOKIE_SECURE=true.
+    secure: process.env.COOKIE_SECURE === "true",
     path: "/",
     expires: expiresAt,
   });

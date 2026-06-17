@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { headers } from "next/headers";
 import { db, schema } from "@/db";
 import { verifyPassword, createSession } from "@/lib/auth";
+import { DUMMY_PASSWORD_HASH } from "@/lib/password";
 import { checkRateLimit } from "@/app/api/documents/_ratelimit";
 
 // Brute-force guard: fixed window per email+IP. Reuses the dependency-free,
@@ -36,11 +37,26 @@ export async function loginAction(
     return { error: `Too many attempts. Try again in ${mins} minute${mins === 1 ? "" : "s"}.` };
   }
 
-  const rows = await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1);
+  let rows;
+  try {
+    rows = await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1);
+  } catch (err) {
+    console.error("[login] user lookup error:", err);
+    return { error: "Couldn't sign you in. Please try again." };
+  }
   const user = rows[0];
-  if (!user || !user.active || !verifyPassword(password, user.passwordHash)) {
+  // Always run scrypt (dummy hash when the user is missing/inactive) so a
+  // non-existent email can't be distinguished by login response timing.
+  const usable = user && user.active && user.passwordHash;
+  const ok = verifyPassword(password, usable ? user.passwordHash : DUMMY_PASSWORD_HASH);
+  if (!usable || !ok) {
     return { error: "Invalid credentials." };
   }
-  await createSession(user.id);
+  try {
+    await createSession(user.id);
+  } catch (err) {
+    console.error("[login] session error:", err);
+    return { error: "Couldn't start your session. Please try again." };
+  }
   return {};
 }

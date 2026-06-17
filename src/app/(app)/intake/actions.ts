@@ -37,12 +37,15 @@ export async function correctDocType(
     .limit(1);
   if (!row) return { ok: false, error: "Extraction not found." };
 
-  await db
-    .update(documentExtractions)
-    .set({ docType, confidence: 1 })
-    .where(eq(documentExtractions.id, extractionId));
-
-  await logActivity(user.id, "updated", extractionId, `${user.name} corrected doc type to ${docType}`);
+  try {
+    await db
+      .update(documentExtractions)
+      .set({ docType, confidence: 1 })
+      .where(eq(documentExtractions.id, extractionId));
+    await logActivity(user.id, "updated", extractionId, `${user.name} corrected doc type to ${docType}`);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to update doc type." };
+  }
   revalidatePath("/intake");
   return { ok: true };
 }
@@ -66,11 +69,15 @@ export async function confirmMatch(
 
   // Clearing the match.
   if (!requestId) {
-    await db
-      .update(documentExtractions)
-      .set({ status: "processed", matchedRequestId: null, matchedWorkItemId: null })
-      .where(eq(documentExtractions.id, extractionId));
-    await logActivity(user.id, "updated", extractionId, `${user.name} cleared the auto-match`);
+    try {
+      await db
+        .update(documentExtractions)
+        .set({ status: "processed", matchedRequestId: null, matchedWorkItemId: null })
+        .where(eq(documentExtractions.id, extractionId));
+      await logActivity(user.id, "updated", extractionId, `${user.name} cleared the auto-match`);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Failed to clear match." };
+    }
     revalidatePath("/intake");
     return { ok: true };
   }
@@ -91,7 +98,8 @@ export async function confirmMatch(
   );
   const allDone = nextItems.length > 0 && nextItems.every((it) => it.fulfilled);
 
-  await db.transaction((tx) => {
+  try {
+    db.transaction((tx) => {
     tx.update(documentRequests)
       .set({ items: nextItems, status: allDone ? "fulfilled" : "partial" })
       .where(eq(documentRequests.id, requestId))
@@ -105,7 +113,10 @@ export async function confirmMatch(
       })
       .where(eq(documentExtractions.id, extractionId))
       .run();
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to confirm match." };
+  }
 
   await logActivity(
     user.id,
@@ -119,7 +130,7 @@ export async function confirmMatch(
 
 /** Re-queue a failed/skipped extraction for processing. */
 export async function reprocess(extractionId: string): Promise<IntakeActionResult> {
-  await requireWrite();
+  const user = await requireWrite();
   const [row] = await db
     .select()
     .from(documentExtractions)
@@ -127,21 +138,26 @@ export async function reprocess(extractionId: string): Promise<IntakeActionResul
     .limit(1);
   if (!row) return { ok: false, error: "Extraction not found." };
 
-  // Dynamic import keeps the server-only pipeline out of the action module graph
-  // until actually needed.
-  const { processDocument } = await import("@/server/ocr");
-  // Mark pending immediately for UI feedback, then fire the pipeline.
-  await db
-    .update(documentExtractions)
-    .set({ status: "pending", error: null })
-    .where(eq(documentExtractions.id, extractionId));
+  try {
+    // Dynamic import keeps the server-only pipeline out of the action module graph
+    // until actually needed.
+    const { processDocument } = await import("@/server/ocr");
+    // Mark pending immediately for UI feedback, then fire the pipeline.
+    await db
+      .update(documentExtractions)
+      .set({ status: "pending", error: null })
+      .where(eq(documentExtractions.id, extractionId));
+    await logActivity(user.id, "reprocessed", extractionId, `${user.name} requeued a document for processing`);
 
-  void processDocument({
-    sourcePath: row.sourcePath,
-    fileEventId: row.fileEventId,
-    documentId: row.documentId,
-    organizationId: row.organizationId,
-  }).catch(() => {});
+    void processDocument({
+      sourcePath: row.sourcePath,
+      fileEventId: row.fileEventId,
+      documentId: row.documentId,
+      organizationId: row.organizationId,
+    }).catch(() => {});
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to reprocess." };
+  }
 
   revalidatePath("/intake");
   return { ok: true };
@@ -150,11 +166,15 @@ export async function reprocess(extractionId: string): Promise<IntakeActionResul
 /** Dismiss an extraction from the queue (soft: mark failed with a note). */
 export async function dismissExtraction(extractionId: string): Promise<IntakeActionResult> {
   const user = await requireWrite();
-  await db
-    .update(documentExtractions)
-    .set({ status: "failed", error: "Dismissed by staff" })
-    .where(eq(documentExtractions.id, extractionId));
-  await logActivity(user.id, "dismissed", extractionId, `${user.name} dismissed an intake item`);
+  try {
+    await db
+      .update(documentExtractions)
+      .set({ status: "failed", error: "Dismissed by staff" })
+      .where(eq(documentExtractions.id, extractionId));
+    await logActivity(user.id, "dismissed", extractionId, `${user.name} dismissed an intake item`);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to dismiss item." };
+  }
   revalidatePath("/intake");
   return { ok: true };
 }

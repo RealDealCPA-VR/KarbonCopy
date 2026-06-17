@@ -34,34 +34,40 @@ export async function POST(req: Request) {
   }
 
   // Ground the model in THIS firm's actual configuration.
-  const [workTypes, statuses, users, firmNameRow] = await Promise.all([
-    db
-      .select({
-        id: schema.workTypes.id,
-        name: schema.workTypes.name,
-        defaultBudgetMinutes: schema.workTypes.defaultBudgetMinutes,
-      })
-      .from(schema.workTypes)
-      .orderBy(asc(schema.workTypes.name)),
-    db
-      .select({
-        id: schema.workStatuses.id,
-        name: schema.workStatuses.name,
-        category: schema.workStatuses.category,
-      })
-      .from(schema.workStatuses)
-      .orderBy(asc(schema.workStatuses.position)),
-    db
-      .select({ id: schema.users.id, name: schema.users.name, role: schema.users.role })
-      .from(schema.users)
-      .where(eq(schema.users.active, true))
-      .orderBy(asc(schema.users.name)),
-    db
-      .select({ value: schema.settings.value })
-      .from(schema.settings)
-      .where(eq(schema.settings.key, "firmName"))
-      .limit(1),
-  ]);
+  let workTypes, statuses, users, firmNameRow;
+  try {
+    [workTypes, statuses, users, firmNameRow] = await Promise.all([
+      db
+        .select({
+          id: schema.workTypes.id,
+          name: schema.workTypes.name,
+          defaultBudgetMinutes: schema.workTypes.defaultBudgetMinutes,
+        })
+        .from(schema.workTypes)
+        .orderBy(asc(schema.workTypes.name)),
+      db
+        .select({
+          id: schema.workStatuses.id,
+          name: schema.workStatuses.name,
+          category: schema.workStatuses.category,
+        })
+        .from(schema.workStatuses)
+        .orderBy(asc(schema.workStatuses.position)),
+      db
+        .select({ id: schema.users.id, name: schema.users.name, role: schema.users.role })
+        .from(schema.users)
+        .where(eq(schema.users.active, true))
+        .orderBy(asc(schema.users.name)),
+      db
+        .select({ value: schema.settings.value })
+        .from(schema.settings)
+        .where(eq(schema.settings.key, "firmName"))
+        .limit(1),
+    ]);
+  } catch (err) {
+    console.error("[automate/generate] firm context load failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load firm configuration." }, { status: 500 });
+  }
 
   const firmContext: FirmContext = {
     firmName: typeof firmNameRow[0]?.value === "string" ? (firmNameRow[0].value as string) : null,

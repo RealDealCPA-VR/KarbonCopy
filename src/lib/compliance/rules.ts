@@ -172,7 +172,11 @@ function dueNthMonthAfterFye(
 ): Date {
   const endYear = periodEndYear(taxYear);
   const periodEnd = utcDate(endYear, fye.month, Math.min(fye.day, lastDayOfMonth(endYear, fye.month)));
-  // First day of the month that is `monthsAfter` months past the period-end month.
+  // Due month = FYE month + monthsAfter (IRS "Nth month following the close of the
+  // tax year" counts the close month as 0). `getUTCMonth()` is 0-based and utcDate
+  // is 1-based, so `+ 1` lands on the 1st of the SAME month as periodEnd; adding
+  // `monthsAfter` then gives the correct due month for ANY fiscal-year end. e.g.
+  // Dec FYE +3 → Mar 15; Jun FYE +3 → Sep 15. (Verified across all FYEs.)
   const base = addMonthsUtc(utcDate(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth() + 1, 1), monthsAfter);
   const due = utcDate(base.getUTCFullYear(), base.getUTCMonth() + 1, day);
   return nextBusinessDay(due);

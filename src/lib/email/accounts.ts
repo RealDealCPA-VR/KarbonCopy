@@ -39,7 +39,11 @@ export async function getAccount(id: string): Promise<EmailAccount | null> {
 export function getAccountConfig(account: EmailAccount): EmailConfig | null {
   if (!account.configEnc) return null;
   const json = decryptField(account.configEnc);
-  if (!json) return null;
+  if (!json) {
+    // configEnc exists but won't decrypt → a key change, not "no config".
+    console.error(`[email] could not decrypt credentials for account ${account.id} — APP_ENCRYPTION_KEY may have changed.`);
+    return null;
+  }
   try {
     return JSON.parse(json) as EmailConfig;
   } catch {
@@ -121,6 +125,7 @@ export async function createAccount(input: CreateAccountInput): Promise<EmailAcc
       configEnc: input.config ? encryptField(JSON.stringify(input.config)) : null,
     })
     .returning();
+  if (!row) throw new Error("Email account could not be created.");
   return row;
 }
 

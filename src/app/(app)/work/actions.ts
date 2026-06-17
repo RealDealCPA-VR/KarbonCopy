@@ -138,6 +138,7 @@ export async function saveWorkItem(input: WorkItemInput) {
     .insert(schema.workItems)
     .values({ ...values, boardPosition: (maxPos ?? 0) + 1 })
     .returning();
+  if (!created) throw new Error("Work item could not be created.");
 
   await logActivity(user.id, "created", created.id, `${user.name} created "${title}"`);
 
@@ -163,6 +164,12 @@ export async function saveWorkItem(input: WorkItemInput) {
 
 export async function deleteWorkItem(id: string) {
   const user = await requireManager();
+  const [prev] = await db
+    .select({ id: schema.workItems.id })
+    .from(schema.workItems)
+    .where(eq(schema.workItems.id, id))
+    .limit(1);
+  if (!prev) throw new Error("Work item not found");
   await db
     .update(schema.workItems)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
@@ -289,6 +296,7 @@ export async function addTask(input: {
       position: (maxPos ?? 0) + 1,
     })
     .returning();
+  if (!task) throw new Error("Task could not be created.");
   await logActivity(user.id, "updated", input.workItemId, `${user.name} added a task`);
   revalidatePath(`/work/${input.workItemId}`);
   return task;
@@ -336,15 +344,16 @@ export async function toggleTask(taskId: string, completed: boolean) {
 }
 
 export async function deleteTask(taskId: string) {
-  await requireWrite();
+  const user = await requireWrite();
   const [task] = await db.select().from(schema.workTasks).where(eq(schema.workTasks.id, taskId)).limit(1);
   if (!task) return;
   await db.delete(schema.workTasks).where(eq(schema.workTasks.id, taskId));
+  await logActivity(user.id, "updated", task.workItemId, `${user.name} deleted a task`);
   revalidatePath(`/work/${task.workItemId}`);
 }
 
 export async function reorderTask(taskId: string, direction: "up" | "down") {
-  await requireWrite();
+  const user = await requireWrite();
   const [task] = await db.select().from(schema.workTasks).where(eq(schema.workTasks.id, taskId)).limit(1);
   if (!task) return;
   const siblings = await db
@@ -360,6 +369,7 @@ export async function reorderTask(taskId: string, direction: "up" | "down") {
   const b = siblings[swapIdx];
   await db.update(schema.workTasks).set({ position: b.position }).where(eq(schema.workTasks.id, a.id));
   await db.update(schema.workTasks).set({ position: a.position }).where(eq(schema.workTasks.id, b.id));
+  await logActivity(user.id, "updated", task.workItemId, `${user.name} reordered a task`);
   revalidatePath(`/work/${task.workItemId}`);
 }
 
@@ -380,6 +390,7 @@ export async function addComment(input: { workItemId: string; body: string }) {
       body,
     })
     .returning();
+  if (!comment) throw new Error("Comment could not be created.");
   await logActivity(user.id, "commented", input.workItemId, `${user.name} left a note`);
 
   // Notify the assignee (if it's someone else) that there's a new note.
@@ -464,6 +475,7 @@ export async function applyTemplate(input: {
       templateId: tpl.id,
     })
     .returning();
+  if (!created) throw new Error("Work item could not be created.");
 
   if (tasks.length) {
     await db.insert(schema.workTasks).values(

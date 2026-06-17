@@ -75,34 +75,51 @@ export async function createThread(form: FormData): Promise<ActionResult<{ id: s
   const contactId = nullable(clean(form.get("contactId")));
   const now = new Date();
 
-  const [thread] = await db
-    .insert(inboxThreads)
-    .values({
-      subject,
-      status: "open",
-      organizationId,
-      contactId,
-      lastMessageAt: now,
-    })
-    .returning({ id: inboxThreads.id });
+  // Thread + first message must be atomic so a failed message insert can't leave
+  // an orphaned thread. better-sqlite3 tx callbacks must be synchronous.
+  let threadId: string;
+  try {
+    threadId = db.transaction((tx) => {
+      const [t] = tx
+        .insert(inboxThreads)
+        .values({
+          subject,
+          status: "open",
+          organizationId,
+          contactId,
+          lastMessageAt: now,
+        })
+        .returning({ id: inboxThreads.id })
+        .all();
+      if (!t) throw new Error("Thread could not be created.");
+      tx.insert(messages)
+        .values({
+          threadId: t.id,
+          fromName,
+          fromEmail,
+          body,
+          direction: "inbound",
+        })
+        .run();
+      return t.id;
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to create thread." };
+  }
 
-  await db.insert(messages).values({
-    threadId: thread.id,
-    fromName,
-    fromEmail,
-    body,
-    direction: "inbound",
-  });
+  try {
+    await logActivity({
+      actorId: user.id,
+      verb: "created",
+      entityId: threadId,
+      summary: `${user.name} logged a new thread "${subject}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to create thread." };
+  }
 
-  await logActivity({
-    actorId: user.id,
-    verb: "created",
-    entityId: thread.id,
-    summary: `${user.name} logged a new thread "${subject}"`,
-  });
-
-  revalidateInbox(thread.id);
-  return { ok: true, data: { id: thread.id } };
+  revalidateInbox(threadId);
+  return { ok: true, data: { id: threadId } };
 }
 
 /* ------------------------------------------------------------------ */
@@ -114,43 +131,47 @@ export async function assignThread(
   assigneeId: string | null,
 ): Promise<ActionResult> {
   const user = await requireWrite();
-  const thread = await getThread(threadId);
-  if (!thread) return { ok: false, error: "Thread not found." };
+  try {
+    const thread = await getThread(threadId);
+    if (!thread) return { ok: false, error: "Thread not found." };
 
-  const next = nullable(assigneeId);
-  // Assigning bumps an "open" thread to "assigned"; clearing reverts to "open".
-  let status: ThreadStatus = thread.status;
-  if (next && thread.status === "open") status = "assigned";
-  if (!next && thread.status === "assigned") status = "open";
+    const next = nullable(assigneeId);
+    // Assigning bumps an "open" thread to "assigned"; clearing reverts to "open".
+    let status: ThreadStatus = thread.status;
+    if (next && thread.status === "open") status = "assigned";
+    if (!next && thread.status === "assigned") status = "open";
 
-  await db
-    .update(inboxThreads)
-    .set({ assigneeId: next, status })
-    .where(eq(inboxThreads.id, threadId));
+    await db
+      .update(inboxThreads)
+      .set({ assigneeId: next, status })
+      .where(eq(inboxThreads.id, threadId));
 
-  await logActivity({
-    actorId: user.id,
-    verb: "assigned",
-    entityId: threadId,
-    summary: next
-      ? `${user.name} assigned thread "${thread.subject}"`
-      : `${user.name} unassigned thread "${thread.subject}"`,
-    meta: { assigneeId: next },
-  });
+    await logActivity({
+      actorId: user.id,
+      verb: "assigned",
+      entityId: threadId,
+      summary: next
+        ? `${user.name} assigned thread "${thread.subject}"`
+        : `${user.name} unassigned thread "${thread.subject}"`,
+      meta: { assigneeId: next },
+    });
 
-  if (next && next !== user.id) {
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        userId: next,
-        type: "assignment",
-        title: "A thread was assigned to you",
-        body: thread.subject,
-        entityKind: "thread",
-        entityId: threadId,
-      })
-      .returning();
-    emitToUser(next, "notification", notif);
+    if (next && next !== user.id) {
+      const [notif] = await db
+        .insert(notifications)
+        .values({
+          userId: next,
+          type: "assignment",
+          title: "A thread was assigned to you",
+          body: thread.subject,
+          entityKind: "thread",
+          entityId: threadId,
+        })
+        .returning();
+      if (notif) emitToUser(next, "notification", notif);
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to assign thread." };
   }
 
   revalidateInbox(threadId);
@@ -166,18 +187,22 @@ export async function setThreadStatus(
   status: ThreadStatus,
 ): Promise<ActionResult> {
   const user = await requireWrite();
-  const thread = await getThread(threadId);
-  if (!thread) return { ok: false, error: "Thread not found." };
+  try {
+    const thread = await getThread(threadId);
+    if (!thread) return { ok: false, error: "Thread not found." };
 
-  await db.update(inboxThreads).set({ status }).where(eq(inboxThreads.id, threadId));
+    await db.update(inboxThreads).set({ status }).where(eq(inboxThreads.id, threadId));
 
-  await logActivity({
-    actorId: user.id,
-    verb: "updated",
-    entityId: threadId,
-    summary: `${user.name} marked "${thread.subject}" as ${status}`,
-    meta: { status },
-  });
+    await logActivity({
+      actorId: user.id,
+      verb: "updated",
+      entityId: threadId,
+      summary: `${user.name} marked "${thread.subject}" as ${status}`,
+      meta: { status },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to update thread status." };
+  }
 
   revalidateInbox(threadId);
   return { ok: true };
@@ -192,24 +217,28 @@ export async function linkThread(
   links: { organizationId?: string | null; contactId?: string | null; workItemId?: string | null },
 ): Promise<ActionResult> {
   const user = await requireWrite();
-  const thread = await getThread(threadId);
-  if (!thread) return { ok: false, error: "Thread not found." };
+  try {
+    const thread = await getThread(threadId);
+    if (!thread) return { ok: false, error: "Thread not found." };
 
-  const patch: Partial<typeof schema.inboxThreads.$inferInsert> = {};
-  if ("organizationId" in links) patch.organizationId = nullable(links.organizationId);
-  if ("contactId" in links) patch.contactId = nullable(links.contactId);
-  if ("workItemId" in links) patch.workItemId = nullable(links.workItemId);
-  if (Object.keys(patch).length === 0) return { ok: true };
+    const patch: Partial<typeof schema.inboxThreads.$inferInsert> = {};
+    if ("organizationId" in links) patch.organizationId = nullable(links.organizationId);
+    if ("contactId" in links) patch.contactId = nullable(links.contactId);
+    if ("workItemId" in links) patch.workItemId = nullable(links.workItemId);
+    if (Object.keys(patch).length === 0) return { ok: true };
 
-  await db.update(inboxThreads).set(patch).where(eq(inboxThreads.id, threadId));
+    await db.update(inboxThreads).set(patch).where(eq(inboxThreads.id, threadId));
 
-  await logActivity({
-    actorId: user.id,
-    verb: "updated",
-    entityId: threadId,
-    summary: `${user.name} updated links on "${thread.subject}"`,
-    meta: patch,
-  });
+    await logActivity({
+      actorId: user.id,
+      verb: "updated",
+      entityId: threadId,
+      summary: `${user.name} updated links on "${thread.subject}"`,
+      meta: patch,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to update thread links." };
+  }
 
   revalidateInbox(threadId);
   return { ok: true };
@@ -230,12 +259,19 @@ export async function addMessage(form: FormData): Promise<ActionResult<{ id: str
   if (!threadId) return { ok: false, error: "Missing thread." };
   if (!body) return { ok: false, error: "Message cannot be empty." };
 
-  const thread = await getThread(threadId);
+  let thread;
+  try {
+    thread = await getThread(threadId);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load thread." };
+  }
   if (!thread) return { ok: false, error: "Thread not found." };
 
   const now = new Date();
   // Insert the message and bump the thread's lastMessageAt atomically.
-  const row = db.transaction((tx) => {
+  let row: { id: string };
+  try {
+    row = db.transaction((tx) => {
     const [inserted] = tx
       .insert(messages)
       .values({
@@ -249,20 +285,28 @@ export async function addMessage(form: FormData): Promise<ActionResult<{ id: str
       })
       .returning({ id: messages.id })
       .all();
+    if (!inserted) throw new Error("Message could not be created.");
 
     tx.update(inboxThreads).set({ lastMessageAt: now }).where(eq(inboxThreads.id, threadId)).run();
     return inserted;
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to add message." };
+  }
 
-  await logActivity({
-    actorId: user.id,
-    verb: direction === "note" ? "commented" : "replied",
-    entityId: threadId,
-    summary:
-      direction === "note"
-        ? `${user.name} added an internal note to "${thread.subject}"`
-        : `${user.name} replied to "${thread.subject}"`,
-  });
+  try {
+    await logActivity({
+      actorId: user.id,
+      verb: direction === "note" ? "commented" : "replied",
+      entityId: threadId,
+      summary:
+        direction === "note"
+          ? `${user.name} added an internal note to "${thread.subject}"`
+          : `${user.name} replied to "${thread.subject}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to add message." };
+  }
 
   revalidateInbox(threadId);
   return { ok: true, data: { id: row.id } };
@@ -277,24 +321,32 @@ export async function convertThreadToWork(
   opts?: { title?: string | null; assigneeId?: string | null },
 ): Promise<ActionResult<{ workItemId: string }>> {
   const user = await requireWrite();
-  const thread = await getThread(threadId);
-  if (!thread) return { ok: false, error: "Thread not found." };
-  if (thread.workItemId) {
-    return { ok: false, error: "This thread is already linked to a work item." };
-  }
+  let thread;
+  let firstStatus;
+  try {
+    thread = await getThread(threadId);
+    if (!thread) return { ok: false, error: "Thread not found." };
+    if (thread.workItemId) {
+      return { ok: false, error: "This thread is already linked to a work item." };
+    }
 
-  // Default status = first board column by position.
-  const [firstStatus] = await db
-    .select({ id: workStatuses.id })
-    .from(workStatuses)
-    .orderBy(asc(workStatuses.position))
-    .limit(1);
+    // Default status = first board column by position.
+    [firstStatus] = await db
+      .select({ id: workStatuses.id })
+      .from(workStatuses)
+      .orderBy(asc(workStatuses.position))
+      .limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load thread." };
+  }
 
   const title = nullable(opts?.title) ?? thread.subject;
   const assigneeId = nullable(opts?.assigneeId) ?? thread.assigneeId ?? null;
 
   // Create the work item, link it to the thread, and log the activity atomically.
-  const work = db.transaction((tx) => {
+  let work: { id: string };
+  try {
+    work = db.transaction((tx) => {
     const [created] = tx
       .insert(workItems)
       .values({
@@ -307,6 +359,7 @@ export async function convertThreadToWork(
       })
       .returning({ id: workItems.id })
       .all();
+    if (!created) throw new Error("Work item could not be created.");
 
     tx.update(inboxThreads).set({ workItemId: created.id }).where(eq(inboxThreads.id, threadId)).run();
 
@@ -322,21 +375,29 @@ export async function convertThreadToWork(
       .run();
 
     return created;
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to convert thread." };
+  }
 
   if (assigneeId && assigneeId !== user.id) {
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        userId: assigneeId,
-        type: "assignment",
-        title: "New work assigned to you",
-        body: title,
-        entityKind: "work_item",
-        entityId: work.id,
-      })
-      .returning();
-    emitToUser(assigneeId, "notification", notif);
+    try {
+      const [notif] = await db
+        .insert(notifications)
+        .values({
+          userId: assigneeId,
+          type: "assignment",
+          title: "New work assigned to you",
+          body: title,
+          entityKind: "work_item",
+          entityId: work.id,
+        })
+        .returning();
+      if (notif) emitToUser(assigneeId, "notification", notif);
+    } catch (err) {
+      // Work item is already committed; a notification failure must not undo it.
+      console.error("[inbox] convert notification failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   revalidateInbox(threadId);
@@ -353,7 +414,12 @@ export async function addTasksToThreadWork(
   tasks: string[],
 ): Promise<ActionResult<{ count: number }>> {
   const user = await requireWrite();
-  const thread = await getThread(threadId);
+  let thread;
+  try {
+    thread = await getThread(threadId);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load thread." };
+  }
   if (!thread) return { ok: false, error: "Thread not found." };
   if (!thread.workItemId) {
     return { ok: false, error: "Link a work item first, then add tasks." };
@@ -362,16 +428,18 @@ export async function addTasksToThreadWork(
   const titles = tasks.map((t) => t.trim()).filter(Boolean);
   if (!titles.length) return { ok: false, error: "No tasks to add." };
 
-  const existing = await db
-    .select({ value: workTasks.position })
-    .from(workTasks)
-    .where(eq(workTasks.workItemId, workItemId))
-    .orderBy(desc(workTasks.position))
-    .limit(1);
-
-  let pos = (existing[0]?.value ?? 0) + 1;
+  let pos: number;
   // Bulk-insert the tasks and log the activity atomically.
-  db.transaction((tx) => {
+  try {
+    const existing = await db
+      .select({ value: workTasks.position })
+      .from(workTasks)
+      .where(eq(workTasks.workItemId, workItemId))
+      .orderBy(desc(workTasks.position))
+      .limit(1);
+
+    pos = (existing[0]?.value ?? 0) + 1;
+    db.transaction((tx) => {
     tx.insert(workTasks)
       .values(
         titles.map((title) => ({
@@ -393,7 +461,10 @@ export async function addTasksToThreadWork(
         meta: { workItemId, count: titles.length },
       })
       .run();
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to add tasks." };
+  }
 
   revalidatePath(`/work/${workItemId}`);
   revalidateInbox(threadId);

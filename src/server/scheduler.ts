@@ -234,7 +234,13 @@ async function expandRecurrences(now: Date): Promise<number> {
     if (!next) continue;
 
     // Skip if an open (not-completed, not-deleted) successor already exists for
-    // this lineage with a due date >= the computed next date.
+    // this lineage with a due date >= the computed next date. organizationId is
+    // nullable, so match NULL with isNull (eq(col, null) would never match and
+    // would spawn duplicate successors every tick).
+    const orgCond =
+      item.organizationId == null
+        ? isNull(schema.workItems.organizationId)
+        : eq(schema.workItems.organizationId, item.organizationId);
     const lineage = await db
       .select()
       .from(schema.workItems)
@@ -242,6 +248,7 @@ async function expandRecurrences(now: Date): Promise<number> {
         and(
           eq(schema.workItems.title, item.title),
           eq(schema.workItems.recurrenceRule, item.recurrenceRule),
+          orgCond,
           isNull(schema.workItems.completedAt),
           isNull(schema.workItems.deletedAt),
         ),

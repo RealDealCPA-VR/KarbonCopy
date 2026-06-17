@@ -99,26 +99,32 @@ export async function startTimer(form: FormData): Promise<ActionResult<{ id: str
   const rateCents = toInt(form.get("rateCents"));
   const now = new Date();
 
-  // Stop any timers already running for this user.
-  await stopAllRunning(user.id, now);
+  let row;
+  try {
+    // Stop any timers already running for this user.
+    await stopAllRunning(user.id, now);
 
-  const organizationId = await orgForWorkItem(workItemId);
+    const organizationId = await orgForWorkItem(workItemId);
 
-  const [row] = await db
-    .insert(timeEntries)
-    .values({
-      userId: user.id,
-      workItemId,
-      organizationId,
-      description,
-      billable,
-      rateCents,
-      minutes: 0,
-      date: startOfDay(now),
-      startedAt: now,
-      running: true,
-    })
-    .returning({ id: timeEntries.id });
+    [row] = await db
+      .insert(timeEntries)
+      .values({
+        userId: user.id,
+        workItemId,
+        organizationId,
+        description,
+        billable,
+        rateCents,
+        minutes: 0,
+        date: startOfDay(now),
+        startedAt: now,
+        running: true,
+      })
+      .returning({ id: timeEntries.id });
+    if (!row) return { ok: false, error: "Time entry could not be created." };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to start timer." };
+  }
 
   revalidate();
   return { ok: true, data: { id: row.id } };
@@ -128,30 +134,34 @@ export async function startTimer(form: FormData): Promise<ActionResult<{ id: str
 export async function stopTimer(id: string): Promise<ActionResult> {
   const user = await requireWrite();
   const now = new Date();
-  const [entry] = await db
-    .select()
-    .from(timeEntries)
-    .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id)))
-    .limit(1);
-  if (!entry) return { ok: false, error: "Timer not found." };
-  if (!entry.running) return { ok: true };
+  try {
+    const [entry] = await db
+      .select()
+      .from(timeEntries)
+      .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id)))
+      .limit(1);
+    if (!entry) return { ok: false, error: "Timer not found." };
+    if (!entry.running) return { ok: true };
 
-  const base = entry.startedAt ?? now;
-  const elapsed = Math.max(0, Math.round((now.getTime() - base.getTime()) / 60000));
-  const minutes = entry.minutes + elapsed;
+    const base = entry.startedAt ?? now;
+    const elapsed = Math.max(0, Math.round((now.getTime() - base.getTime()) / 60000));
+    const minutes = entry.minutes + elapsed;
 
-  await db
-    .update(timeEntries)
-    .set({ running: false, startedAt: null, minutes })
-    .where(eq(timeEntries.id, id));
+    await db
+      .update(timeEntries)
+      .set({ running: false, startedAt: null, minutes })
+      .where(eq(timeEntries.id, id));
 
-  await logActivity({
-    actorId: user.id,
-    verb: "tracked",
-    entityId: id,
-    summary: `${user.name} logged ${formatMins(minutes)} via timer`,
-    meta: { minutes, workItemId: entry.workItemId },
-  });
+    await logActivity({
+      actorId: user.id,
+      verb: "tracked",
+      entityId: id,
+      summary: `${user.name} logged ${formatMins(minutes)} via timer`,
+      meta: { minutes, workItemId: entry.workItemId },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to stop timer." };
+  }
 
   revalidate();
   return { ok: true };
@@ -160,9 +170,22 @@ export async function stopTimer(id: string): Promise<ActionResult> {
 /** Discard a running timer entirely (no time saved). */
 export async function cancelTimer(id: string): Promise<ActionResult> {
   const user = await requireWrite();
-  await db
-    .delete(timeEntries)
-    .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), eq(timeEntries.running, true)));
+  try {
+    const deleted = await db
+      .delete(timeEntries)
+      .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), eq(timeEntries.running, true)))
+      .returning({ id: timeEntries.id });
+    if (deleted.length) {
+      await logActivity({
+        actorId: user.id,
+        verb: "cancelled",
+        entityId: deleted[0].id,
+        summary: `${user.name} cancelled a running timer`,
+      });
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to cancel timer." };
+  }
   revalidate();
   return { ok: true };
 }
@@ -206,44 +229,50 @@ export async function upsertTimeEntry(form: FormData): Promise<ActionResult<{ id
   if (minutes <= 0) return { ok: false, error: "Enter a duration greater than zero." };
 
   const date = parseDateInput(form.get("date"));
-  const organizationId =
-    clean(form.get("organizationId")) ?? (await orgForWorkItem(workItemId));
-
-  const values = {
-    workItemId,
-    organizationId,
-    description,
-    billable,
-    rateCents,
-    minutes,
-    date,
-  };
 
   let entryId: string;
-  if (id) {
-    // Only the owner may edit their own entry.
-    const updated = await db
-      .update(timeEntries)
-      .set(values)
-      .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id)))
-      .returning({ id: timeEntries.id });
-    if (!updated.length) return { ok: false, error: "Entry not found." };
-    entryId = id;
-  } else {
-    const [row] = await db
-      .insert(timeEntries)
-      .values({ ...values, userId: user.id, running: false })
-      .returning({ id: timeEntries.id });
-    entryId = row.id;
-  }
+  try {
+    const organizationId =
+      clean(form.get("organizationId")) ?? (await orgForWorkItem(workItemId));
 
-  await logActivity({
-    actorId: user.id,
-    verb: id ? "updated" : "tracked",
-    entityId: entryId,
-    summary: `${user.name} ${id ? "edited" : "logged"} ${formatMins(minutes)}`,
-    meta: { minutes, workItemId },
-  });
+    const values = {
+      workItemId,
+      organizationId,
+      description,
+      billable,
+      rateCents,
+      minutes,
+      date,
+    };
+
+    if (id) {
+      // Only the owner may edit their own entry.
+      const updated = await db
+        .update(timeEntries)
+        .set(values)
+        .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id)))
+        .returning({ id: timeEntries.id });
+      if (!updated.length) return { ok: false, error: "Entry not found." };
+      entryId = id;
+    } else {
+      const [row] = await db
+        .insert(timeEntries)
+        .values({ ...values, userId: user.id, running: false })
+        .returning({ id: timeEntries.id });
+      if (!row) return { ok: false, error: "Time entry could not be created." };
+      entryId = row.id;
+    }
+
+    await logActivity({
+      actorId: user.id,
+      verb: id ? "updated" : "tracked",
+      entityId: entryId,
+      summary: `${user.name} ${id ? "edited" : "logged"} ${formatMins(minutes)}`,
+      meta: { minutes, workItemId },
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to save time entry." };
+  }
 
   revalidate();
   return { ok: true, data: { id: entryId } };
@@ -252,11 +281,21 @@ export async function upsertTimeEntry(form: FormData): Promise<ActionResult<{ id
 /** Delete one of the current user's time entries. */
 export async function deleteTimeEntry(id: string): Promise<ActionResult> {
   const user = await requireWrite();
-  const deleted = await db
-    .delete(timeEntries)
-    .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), ne(timeEntries.running, true)))
-    .returning({ id: timeEntries.id });
-  if (!deleted.length) return { ok: false, error: "Entry not found or still running." };
+  try {
+    const deleted = await db
+      .delete(timeEntries)
+      .where(and(eq(timeEntries.id, id), eq(timeEntries.userId, user.id), ne(timeEntries.running, true)))
+      .returning({ id: timeEntries.id });
+    if (!deleted.length) return { ok: false, error: "Entry not found or still running." };
+    await logActivity({
+      actorId: user.id,
+      verb: "deleted",
+      entityId: deleted[0].id,
+      summary: `${user.name} deleted a time entry`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete time entry." };
+  }
   revalidate();
   return { ok: true };
 }
@@ -270,36 +309,41 @@ export async function approveTimeEntries(ids: string[]): Promise<ActionResult<{ 
   if (!hasRole(user, "manager")) return { ok: false, error: "Not authorized." };
   if (!ids.length) return { ok: false, error: "Nothing selected." };
 
-  const rows = await db
-    .update(timeEntries)
-    .set({ approved: true })
-    .where(and(inArray(timeEntries.id, ids), eq(timeEntries.running, false), eq(timeEntries.approved, false)))
-    .returning({ id: timeEntries.id, userId: timeEntries.userId, minutes: timeEntries.minutes });
+  let rows;
+  try {
+    rows = await db
+      .update(timeEntries)
+      .set({ approved: true })
+      .where(and(inArray(timeEntries.id, ids), eq(timeEntries.running, false), eq(timeEntries.approved, false)))
+      .returning({ id: timeEntries.id, userId: timeEntries.userId, minutes: timeEntries.minutes });
 
-  // Notify each affected user once + log activity.
-  const byUser = new Map<string, number>();
-  for (const r of rows) {
-    byUser.set(r.userId, (byUser.get(r.userId) ?? 0) + 1);
-    await logActivity({
-      actorId: user.id,
-      verb: "approved",
-      entityId: r.id,
-      summary: `${user.name} approved a time entry`,
-    });
-  }
-  for (const [uid, count] of byUser) {
-    if (uid === user.id) continue;
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        userId: uid,
-        type: "system",
-        title: "Time approved",
-        body: `${count} time ${count === 1 ? "entry was" : "entries were"} approved`,
-        entityKind: "time_entry",
-      })
-      .returning();
-    emitToUser(uid, "notification", notif);
+    // Notify each affected user once + log activity.
+    const byUser = new Map<string, number>();
+    for (const r of rows) {
+      byUser.set(r.userId, (byUser.get(r.userId) ?? 0) + 1);
+      await logActivity({
+        actorId: user.id,
+        verb: "approved",
+        entityId: r.id,
+        summary: `${user.name} approved a time entry`,
+      });
+    }
+    for (const [uid, count] of byUser) {
+      if (uid === user.id) continue;
+      const [notif] = await db
+        .insert(notifications)
+        .values({
+          userId: uid,
+          type: "system",
+          title: "Time approved",
+          body: `${count} time ${count === 1 ? "entry was" : "entries were"} approved`,
+          entityKind: "time_entry",
+        })
+        .returning();
+      if (notif) emitToUser(uid, "notification", notif);
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to approve time entries." };
   }
 
   revalidate();
@@ -310,7 +354,22 @@ export async function approveTimeEntries(ids: string[]): Promise<ActionResult<{ 
 export async function unapproveTimeEntry(id: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!hasRole(user, "manager")) return { ok: false, error: "Not authorized." };
-  await db.update(timeEntries).set({ approved: false }).where(eq(timeEntries.id, id));
+  try {
+    const updated = await db
+      .update(timeEntries)
+      .set({ approved: false })
+      .where(eq(timeEntries.id, id))
+      .returning({ id: timeEntries.id });
+    if (!updated.length) return { ok: false, error: "Entry not found." };
+    await logActivity({
+      actorId: user.id,
+      verb: "updated",
+      entityId: id,
+      summary: `${user.name} re-opened an approved time entry`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to re-open time entry." };
+  }
   revalidate();
   return { ok: true };
 }

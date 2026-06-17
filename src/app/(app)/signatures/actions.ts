@@ -48,11 +48,16 @@ export async function createSignatureRequest(
   if (!documentId) return { ok: false, error: "Pick or upload a PDF to be signed." };
 
   // Validate the document exists and is a PDF we can stamp.
-  const [doc] = await db
-    .select({ id: documents.id, mime: documents.mimeType, name: documents.name, storagePath: documents.storagePath })
-    .from(documents)
-    .where(eq(documents.id, documentId))
-    .limit(1);
+  let doc;
+  try {
+    [doc] = await db
+      .select({ id: documents.id, mime: documents.mimeType, name: documents.name, storagePath: documents.storagePath })
+      .from(documents)
+      .where(eq(documents.id, documentId))
+      .limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load the document." };
+  }
   if (!doc) return { ok: false, error: "That document could not be found." };
   const looksPdf =
     (doc.mime && doc.mime.includes("pdf")) || doc.storagePath.toLowerCase().endsWith(".pdf") ||
@@ -75,7 +80,9 @@ export async function createSignatureRequest(
   const now = new Date();
 
   // Insert the request + genesis audit event atomically (sync better-sqlite3 tx).
-  const created = db.transaction((tx) => {
+  let created: { id: string };
+  try {
+    created = db.transaction((tx) => {
     const [req] = tx
       .insert(signatureRequests)
       .values({
@@ -92,6 +99,7 @@ export async function createSignatureRequest(
       })
       .returning({ id: signatureRequests.id })
       .all();
+    if (!req) throw new Error("Signature request could not be created.");
 
     const payload = {
       type: "created" as const,
@@ -129,7 +137,10 @@ export async function createSignatureRequest(
       .run();
 
     return req;
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to create signature request." };
+  }
 
   revalidatePath("/signatures");
   return { ok: true, data: { id: created.id, token: magicToken } };
@@ -145,20 +156,27 @@ export async function sendSignatureRequest(form: FormData): Promise<ActionResult
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing request id." };
 
-  const [req] = await db
-    .select()
-    .from(signatureRequests)
-    .where(eq(signatureRequests.id, id))
-    .limit(1);
-  if (!req) return { ok: false, error: "Request not found." };
-  if (req.status === "signed") return { ok: false, error: "This request is already signed." };
+  let reqRow: typeof signatureRequests.$inferSelect | undefined;
+  let events: { hash: string | null }[];
+  try {
+    [reqRow] = await db
+      .select()
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id))
+      .limit(1);
 
-  // Compute the next chain hash from the latest stored event.
-  const events = await db
-    .select({ hash: signatureEvents.hash })
-    .from(signatureEvents)
-    .where(eq(signatureEvents.requestId, id))
-    .orderBy(signatureEvents.createdAt);
+    // Compute the next chain hash from the latest stored event.
+    events = await db
+      .select({ hash: signatureEvents.hash })
+      .from(signatureEvents)
+      .where(eq(signatureEvents.requestId, id))
+      .orderBy(signatureEvents.createdAt);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load signature request." };
+  }
+  if (!reqRow) return { ok: false, error: "Request not found." };
+  if (reqRow.status === "signed") return { ok: false, error: "This request is already signed." };
+  const req = reqRow;
   const last = events.length ? events[events.length - 1] : undefined;
 
   const now = new Date();
@@ -173,7 +191,8 @@ export async function sendSignatureRequest(form: FormData): Promise<ActionResult
   };
   const hash = chainHash(last?.hash ?? null, payload);
 
-  db.transaction((tx) => {
+  try {
+    db.transaction((tx) => {
     tx.update(signatureRequests)
       .set({ status: "sent" })
       .where(eq(signatureRequests.id, id))
@@ -196,7 +215,10 @@ export async function sendSignatureRequest(form: FormData): Promise<ActionResult
         summary: `${user.name} sent signature request "${req.title}"`,
       })
       .run();
-  });
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to send signature request." };
+  }
 
   revalidatePath("/signatures");
   return { ok: true };
@@ -211,22 +233,26 @@ export async function deleteSignatureRequest(form: FormData): Promise<ActionResu
   const id = clean(form.get("id"));
   if (!id) return { ok: false, error: "Missing request id." };
 
-  const [req] = await db
-    .select({ title: signatureRequests.title })
-    .from(signatureRequests)
-    .where(eq(signatureRequests.id, id))
-    .limit(1);
-  if (!req) return { ok: false, error: "Request not found." };
+  try {
+    const [req] = await db
+      .select({ title: signatureRequests.title })
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id))
+      .limit(1);
+    if (!req) return { ok: false, error: "Request not found." };
 
-  // signatureEvents cascade-delete via the FK.
-  await db.delete(signatureRequests).where(eq(signatureRequests.id, id));
-  await db.insert(activities).values({
-    actorId: user.id,
-    verb: "deleted",
-    entityKind: "signature_request",
-    entityId: id,
-    summary: `${user.name} deleted signature request "${req.title}"`,
-  });
+    // signatureEvents cascade-delete via the FK.
+    await db.delete(signatureRequests).where(eq(signatureRequests.id, id));
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "deleted",
+      entityKind: "signature_request",
+      entityId: id,
+      summary: `${user.name} deleted signature request "${req.title}"`,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete signature request." };
+  }
 
   revalidatePath("/signatures");
   return { ok: true };

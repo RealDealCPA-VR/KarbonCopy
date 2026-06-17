@@ -53,8 +53,10 @@ function sanitizeLines(raw: unknown): LineDraft[] {
       const unitCents = Math.round(Number((l as any)?.unitCents));
       return {
         description,
-        quantity: Number.isFinite(quantity) ? quantity : 0,
-        unitCents: Number.isFinite(unitCents) ? unitCents : 0,
+        // Clamp to >= 0: a negative quantity/price would produce a negative line
+        // and could zero the invoice total (deriveStatus then marks it "paid").
+        quantity: Number.isFinite(quantity) ? Math.max(0, quantity) : 0,
+        unitCents: Number.isFinite(unitCents) ? Math.max(0, unitCents) : 0,
         workItemId: nullable((l as any)?.workItemId ?? null),
         timeEntryIds:
           Array.isArray((l as any)?.timeEntryIds) && (l as any).timeEntryIds.length
@@ -196,10 +198,21 @@ export async function updateInvoice(input: UpdateInvoiceInput): Promise<ActionRe
   const user = await requireWrite();
   if (!input.id) return { ok: false, error: "Missing invoice id." };
 
-  const [existing] = await db.select().from(invoices).where(eq(invoices.id, input.id)).limit(1);
+  let existing;
+  try {
+    [existing] = await db.select().from(invoices).where(eq(invoices.id, input.id)).limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load invoice." };
+  }
   if (!existing) return { ok: false, error: "Invoice not found." };
   if (existing.status === "void") return { ok: false, error: "Voided invoices can't be edited." };
   if (existing.status === "paid") return { ok: false, error: "Paid invoices can't be edited." };
+  // Editing an invoice that already has payments could drop its total below the
+  // amount paid and derive a bogus "paid" status. Once money is recorded, the
+  // invoice is locked — void and recreate instead (mirrors deleteInvoice).
+  if (existing.amountPaidCents > 0) {
+    return { ok: false, error: "Invoices with recorded payments can't be edited. Void and recreate instead." };
+  }
 
   const lines = sanitizeLines(input.lines);
   if (lines.length === 0) {
@@ -213,6 +226,9 @@ export async function updateInvoice(input: UpdateInvoiceInput): Promise<ActionRe
 
   const organizationId = nullable(input.organizationId);
   const contactId = nullable(input.contactId);
+  // issueDate is always present (the editor defaults it to today), so fall back
+  // to the existing value. dueDate is OPTIONAL and the editor pre-fills it, so an
+  // empty value here means the user intentionally cleared it → set null on purpose.
   const issueDate = input.issueDate ? new Date(input.issueDate) : existing.issueDate;
   const dueDate = input.dueDate ? new Date(input.dueDate) : null;
 
@@ -243,6 +259,9 @@ export async function updateInvoice(input: UpdateInvoiceInput): Promise<ActionRe
           terms: nullable(input.terms),
           sentAt:
             status !== "draft" && !existing.sentAt ? new Date() : existing.sentAt,
+          // Stamp paidAt if this edit pushes the invoice to "paid" (e.g. a
+          // zero-total invoice), matching the payment paths.
+          paidAt: status === "paid" ? (existing.paidAt ?? new Date()) : existing.paidAt,
           updatedAt: new Date(),
         })
         .where(eq(invoices.id, input.id))
@@ -290,7 +309,12 @@ export async function updateInvoice(input: UpdateInvoiceInput): Promise<ActionRe
 
 export async function sendInvoice(invoiceId: string): Promise<ActionResult> {
   const user = await requireWrite();
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  let inv;
+  try {
+    [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load invoice." };
+  }
   if (!inv) return { ok: false, error: "Invoice not found." };
   if (inv.status === "void") return { ok: false, error: "Voided invoices can't be sent." };
 
@@ -301,22 +325,31 @@ export async function sendInvoice(invoiceId: string): Promise<ActionResult> {
     dueDate: inv.dueDate,
   });
 
-  db.transaction((tx) => {
-    tx.update(invoices)
-      .set({ status, sentAt: inv.sentAt ?? new Date(), updatedAt: new Date() })
-      .where(eq(invoices.id, invoiceId))
-      .run();
-    tx.insert(activities)
-      .values({
-        actorId: user.id,
-        verb: "updated",
-        entityKind: "invoice",
-        entityId: invoiceId,
-        summary: `${user.name} marked invoice ${inv.number} as ${status}`,
-        meta: { status },
-      })
-      .run();
-  });
+  try {
+    db.transaction((tx) => {
+      tx.update(invoices)
+        .set({
+          status,
+          sentAt: inv.sentAt ?? new Date(),
+          paidAt: status === "paid" ? (inv.paidAt ?? new Date()) : inv.paidAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(invoices.id, invoiceId))
+        .run();
+      tx.insert(activities)
+        .values({
+          actorId: user.id,
+          verb: "updated",
+          entityKind: "invoice",
+          entityId: invoiceId,
+          summary: `${user.name} marked invoice ${inv.number} as ${status}`,
+          meta: { status },
+        })
+        .run();
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to send invoice." };
+  }
 
   revalidateBilling(invoiceId);
   return { ok: true };
@@ -328,25 +361,34 @@ export async function sendInvoice(invoiceId: string): Promise<ActionResult> {
 
 export async function voidInvoice(invoiceId: string): Promise<ActionResult> {
   const user = await requireManager();
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  let inv;
+  try {
+    [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load invoice." };
+  }
   if (!inv) return { ok: false, error: "Invoice not found." };
   if (inv.status === "paid") return { ok: false, error: "Paid invoices can't be voided." };
 
-  db.transaction((tx) => {
-    tx.update(invoices)
-      .set({ status: "void", updatedAt: new Date() })
-      .where(eq(invoices.id, invoiceId))
-      .run();
-    tx.insert(activities)
-      .values({
-        actorId: user.id,
-        verb: "voided",
-        entityKind: "invoice",
-        entityId: invoiceId,
-        summary: `${user.name} voided invoice ${inv.number}`,
-      })
-      .run();
-  });
+  try {
+    db.transaction((tx) => {
+      tx.update(invoices)
+        .set({ status: "void", updatedAt: new Date() })
+        .where(eq(invoices.id, invoiceId))
+        .run();
+      tx.insert(activities)
+        .values({
+          actorId: user.id,
+          verb: "voided",
+          entityKind: "invoice",
+          entityId: invoiceId,
+          summary: `${user.name} voided invoice ${inv.number}`,
+        })
+        .run();
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to void invoice." };
+  }
 
   revalidateBilling(invoiceId);
   return { ok: true };
@@ -354,25 +396,34 @@ export async function voidInvoice(invoiceId: string): Promise<ActionResult> {
 
 export async function deleteInvoice(invoiceId: string): Promise<ActionResult> {
   const user = await requireManager();
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  let inv;
+  try {
+    [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load invoice." };
+  }
   if (!inv) return { ok: false, error: "Invoice not found." };
   if (inv.amountPaidCents > 0) {
     return { ok: false, error: "Can't delete an invoice with recorded payments. Void it instead." };
   }
 
-  db.transaction((tx) => {
-    // invoiceLines cascade via FK onDelete: "cascade".
-    tx.delete(invoices).where(eq(invoices.id, invoiceId)).run();
-    tx.insert(activities)
-      .values({
-        actorId: user.id,
-        verb: "deleted",
-        entityKind: "invoice",
-        entityId: invoiceId,
-        summary: `${user.name} deleted invoice ${inv.number}`,
-      })
-      .run();
-  });
+  try {
+    db.transaction((tx) => {
+      // invoiceLines cascade via FK onDelete: "cascade".
+      tx.delete(invoices).where(eq(invoices.id, invoiceId)).run();
+      tx.insert(activities)
+        .values({
+          actorId: user.id,
+          verb: "deleted",
+          entityKind: "invoice",
+          entityId: invoiceId,
+          summary: `${user.name} deleted invoice ${inv.number}`,
+        })
+        .run();
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to delete invoice." };
+  }
 
   revalidatePath("/billing");
   return { ok: true };
@@ -392,83 +443,106 @@ export type RecordPaymentInput = {
 
 export async function recordPayment(input: RecordPaymentInput): Promise<ActionResult<{ status: InvoiceStatus }>> {
   const user = await requireWrite();
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1);
-  if (!inv) return { ok: false, error: "Invoice not found." };
-  if (inv.status === "void") return { ok: false, error: "Can't record a payment on a voided invoice." };
 
   const amountCents = Math.round(Number(input.amountCents));
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
     return { ok: false, error: "Enter a payment amount greater than zero." };
   }
-
   const receivedAt = input.receivedAt ? new Date(input.receivedAt) : new Date();
-  const newPaid = inv.amountPaidCents + amountCents;
-  const status = deriveStatus({
-    current: inv.status === "draft" ? "sent" : inv.status,
-    totalCents: inv.totalCents,
-    amountPaidCents: newPaid,
-    dueDate: inv.dueDate,
-  });
 
-  const { paymentId } = db.transaction((tx) => {
-    const [p] = tx
-      .insert(payments)
-      .values({
-        invoiceId: inv.id,
-        organizationId: inv.organizationId,
-        amountCents,
-        method: input.method ?? "manual",
-        reference: nullable(input.reference),
-        processor: "manual",
-        receivedAt,
-        createdById: user.id,
-      })
-      .returning({ id: payments.id })
-      .all();
+  // Read the invoice INSIDE the transaction and compute newPaid from the row read
+  // there — otherwise two concurrent payments both read the old amountPaidCents
+  // and the second update clobbers the first (lost update).
+  type TxResult =
+    | { kind: "ok"; status: InvoiceStatus; invoiceId: string; organizationId: string | null; number: string }
+    | { kind: "notfound" }
+    | { kind: "void" };
+  let result: TxResult;
+  try {
+    result = db.transaction((tx): TxResult => {
+      const inv = tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1).all()[0];
+      if (!inv) return { kind: "notfound" };
+      if (inv.status === "void") return { kind: "void" };
 
-    tx.update(invoices)
-      .set({
+      const newPaid = inv.amountPaidCents + amountCents;
+      const status = deriveStatus({
+        current: inv.status === "draft" ? "sent" : inv.status,
+        totalCents: inv.totalCents,
         amountPaidCents: newPaid,
-        status,
-        paidAt: status === "paid" ? (inv.paidAt ?? receivedAt) : inv.paidAt,
-        updatedAt: new Date(),
-      })
-      .where(eq(invoices.id, inv.id))
-      .run();
+        dueDate: inv.dueDate,
+      });
 
-    tx.insert(activities)
-      .values({
-        actorId: user.id,
-        verb: "recorded",
-        entityKind: "payment",
-        entityId: p.id,
-        summary: `${user.name} recorded a payment on invoice ${inv.number}`,
-        meta: { invoiceId: inv.id, amountCents, method: input.method ?? "manual", status },
-      })
-      .run();
+      const [p] = tx
+        .insert(payments)
+        .values({
+          invoiceId: inv.id,
+          organizationId: inv.organizationId,
+          amountCents,
+          method: input.method ?? "manual",
+          reference: nullable(input.reference),
+          processor: "manual",
+          receivedAt,
+          createdById: user.id,
+        })
+        .returning({ id: payments.id })
+        .all();
+      if (!p) throw new Error("Payment could not be recorded.");
 
-    return { paymentId: p.id };
-  });
+      tx.update(invoices)
+        .set({
+          amountPaidCents: newPaid,
+          status,
+          paidAt: status === "paid" ? (inv.paidAt ?? receivedAt) : inv.paidAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(invoices.id, inv.id))
+        .run();
 
-  // Notify the client's relationship manager (full notifications row + emit).
-  const rmId = await getOrgOwner(inv.organizationId);
-  if (rmId && rmId !== user.id) {
-    const [notif] = await db
-      .insert(notifications)
-      .values({
-        userId: rmId,
-        type: "payment",
-        title: "Payment received",
-        body: `A payment was recorded on invoice ${inv.number}.`,
-        entityKind: "invoice",
-        entityId: inv.id,
-      })
-      .returning();
-    emitToUser(rmId, "notification", notif);
+      tx.insert(activities)
+        .values({
+          actorId: user.id,
+          verb: "recorded",
+          entityKind: "payment",
+          entityId: p.id,
+          summary: `${user.name} recorded a payment on invoice ${inv.number}`,
+          meta: { invoiceId: inv.id, amountCents, method: input.method ?? "manual", status },
+        })
+        .run();
+
+      return { kind: "ok", status, invoiceId: inv.id, organizationId: inv.organizationId, number: inv.number };
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to record payment." };
   }
 
-  revalidateBilling(inv.id);
-  return { ok: true, data: { status } };
+  if (result.kind === "notfound") return { ok: false, error: "Invoice not found." };
+  if (result.kind === "void") return { ok: false, error: "Can't record a payment on a voided invoice." };
+
+  // Notify the client's relationship manager (full notifications row + emit).
+  // Best-effort: the payment is already committed, so a notification failure must
+  // not turn a successful payment into an error result.
+  try {
+    const rmId = await getOrgOwner(result.organizationId);
+    if (rmId && rmId !== user.id) {
+      const [notif] = await db
+        .insert(notifications)
+        .values({
+          userId: rmId,
+          type: "payment",
+          title: "Payment received",
+          body: `A payment was recorded on invoice ${result.number}.`,
+          entityKind: "invoice",
+          entityId: result.invoiceId,
+        })
+        .returning();
+      if (notif) emitToUser(rmId, "notification", notif);
+    }
+  } catch (err) {
+    console.error("[billing] recordPayment notification failed:", err instanceof Error ? err.message : err);
+  }
+
+  revalidateBilling(result.invoiceId);
+  return { ok: true, data: { status: result.status } };
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,6 +558,10 @@ export type WipGroup = {
   rateCents: number;
   entryIds: string[];
 };
+
+/** Fallback hourly rate (cents) for entries with no explicit rate — must match
+ *  the Time UI (time/page.tsx) so the WIP preview and invoice don't disagree. */
+const DEFAULT_RATE_CENTS = 15000;
 
 /** Pull a client's billable + approved time entries not yet on any invoice. */
 export async function getUnbilledTime(organizationId: string): Promise<{
@@ -525,23 +603,31 @@ export async function getUnbilledTime(organizationId: string): Promise<{
   }
 
   let totalMinutes = 0;
-  let totalCents = 0;
   for (const e of entries) {
     if (billedIds.has(e.id)) continue;
     if (!e.minutes) continue;
-    const key = e.workItemId ?? "general";
-    const rateCents = e.rateCents ?? 0;
-    const amountCents = Math.round((e.minutes / 60) * rateCents);
+    const rateCents = e.rateCents ?? DEFAULT_RATE_CENTS;
+    // Key by work item AND rate: entries on the same work item but at different
+    // rates must not collapse into one group (the group carries a single rate,
+    // which would otherwise misprice the invoice line).
+    const key = `${e.workItemId ?? "general"}|${rateCents}`;
     const label = e.workItemId ? (workTitles.get(e.workItemId) ?? "Work") : "Time & services";
     const g =
       byWork.get(key) ??
       ({ key, workItemId: e.workItemId ?? null, label, minutes: 0, amountCents: 0, rateCents, entryIds: [] } as WipGroup);
     g.minutes += e.minutes;
-    g.amountCents += amountCents;
     g.entryIds.push(e.id);
     byWork.set(key, g);
     totalMinutes += e.minutes;
-    totalCents += amountCents;
+  }
+
+  // Compute each group's amount once from its summed minutes — round(hours × rate)
+  // — so the preview total matches what the invoice editor bills for the same
+  // group (it rebuilds the line from total hours × rate, not per-entry rounding).
+  let totalCents = 0;
+  for (const g of byWork.values()) {
+    g.amountCents = Math.round((g.minutes / 60) * g.rateCents);
+    totalCents += g.amountCents;
   }
 
   return { groups: Array.from(byWork.values()), totalMinutes, totalCents };
@@ -572,7 +658,12 @@ export async function createCheckoutLink(invoiceId: string): Promise<ActionResul
     return { ok: false, error: "Stripe is not configured. Set STRIPE_SECRET_KEY to enable card payments." };
   }
 
-  const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  let inv;
+  try {
+    [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load invoice." };
+  }
   if (!inv) return { ok: false, error: "Invoice not found." };
   if (inv.status === "void") return { ok: false, error: "Can't collect on a voided invoice." };
   if (inv.status === "paid") return { ok: false, error: "This invoice is already paid in full." };
@@ -584,7 +675,11 @@ export async function createCheckoutLink(invoiceId: string): Promise<ActionResul
   let payToken = inv.payToken;
   if (!payToken) {
     payToken = newPayToken();
-    await db.update(invoices).set({ payToken, updatedAt: new Date() }).where(eq(invoices.id, inv.id));
+    try {
+      await db.update(invoices).set({ payToken, updatedAt: new Date() }).where(eq(invoices.id, inv.id));
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Failed to prepare checkout." };
+    }
   }
 
   let url: string;
@@ -594,7 +689,9 @@ export async function createCheckoutLink(invoiceId: string): Promise<ActionResul
       success_url: `${appUrl()}/portal/pay/${payToken}?paid=1`,
       cancel_url: `${appUrl()}/portal/pay/${payToken}`,
       client_reference_id: inv.id,
-      metadata: { invoiceId: inv.id, invoiceNumber: inv.number, payToken },
+      // Don't leak the capability payToken to Stripe's logs/dashboard — the
+      // webhook reconciles on invoiceId / client_reference_id only.
+      metadata: { invoiceId: inv.id, invoiceNumber: inv.number },
       payment_intent_data: { metadata: { invoiceId: inv.id, invoiceNumber: inv.number } },
       line_items: [
         {
@@ -616,13 +713,18 @@ export async function createCheckoutLink(invoiceId: string): Promise<ActionResul
     };
   }
 
-  await db.insert(activities).values({
-    actorId: user.id,
-    verb: "updated",
-    entityKind: "invoice",
-    entityId: inv.id,
-    summary: `${user.name} generated a Stripe payment link for invoice ${inv.number}`,
-  });
+  try {
+    await db.insert(activities).values({
+      actorId: user.id,
+      verb: "updated",
+      entityKind: "invoice",
+      entityId: inv.id,
+      summary: `${user.name} generated a Stripe payment link for invoice ${inv.number}`,
+    });
+  } catch (err) {
+    // The Stripe link is already created; an audit-log failure must not fail it.
+    console.error("[billing] createCheckoutLink activity failed:", err instanceof Error ? err.message : err);
+  }
 
   revalidateBilling(inv.id);
   return { ok: true, data: { url } };

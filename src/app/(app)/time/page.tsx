@@ -108,7 +108,7 @@ export default async function TimePage({
         workItemId: timeEntries.workItemId,
         totalMinutes: sql<number>`coalesce(sum(${timeEntries.minutes}), 0)`,
         billableMinutes: sql<number>`coalesce(sum(case when ${timeEntries.billable} then ${timeEntries.minutes} else 0 end), 0)`,
-        billableAmountCents: sql<number>`coalesce(sum(case when ${timeEntries.billable} then ${timeEntries.minutes} * coalesce(${timeEntries.rateCents}, ${DEFAULT_RATE_CENTS}) else 0 end), 0)`,
+        billableAmountCents: sql<number>`coalesce(cast(round(sum(case when ${timeEntries.billable} then (${timeEntries.minutes} / 60.0) * coalesce(${timeEntries.rateCents}, ${DEFAULT_RATE_CENTS}) else 0 end)) as integer), 0)`,
       })
       .from(timeEntries)
       .where(eq(timeEntries.running, false))

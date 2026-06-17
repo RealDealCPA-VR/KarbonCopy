@@ -103,6 +103,7 @@ export async function createDeadline(actor: Actor, input: unknown) {
       taxPeriod: data.taxPeriod || null,
     })
     .returning();
+  if (!row) throw notFound("Deadline");
   await logActivity({
     actorId: actor.id, verb: "created", entityKind: "deadline", entityId: row.id,
     summary: `${actor.name} created deadline ${row.name} (via API)`,
@@ -120,6 +121,7 @@ export async function updateDeadline(actor: Actor, id: string, input: unknown) {
     if (data[k] !== undefined) patch[k] = data[k];
   }
   const [row] = await db.update(complianceDeadlines).set(patch).where(eq(complianceDeadlines.id, id)).returning();
+  if (!row) throw notFound("Deadline");
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "deadline", entityId: id,
     summary: `${actor.name} updated deadline ${row.name} (via API)`,
@@ -137,6 +139,7 @@ export async function setDeadlineStatus(actor: Actor, id: string, status: unknow
     .set({ status: value })
     .where(eq(complianceDeadlines.id, id))
     .returning();
+  if (!row) throw notFound("Deadline");
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "deadline", entityId: id,
     summary: `${actor.name} set deadline ${row.name} status to ${value} (via API)`,

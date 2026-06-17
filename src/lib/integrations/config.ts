@@ -23,7 +23,12 @@ export { parseStoredConfig, toPublicConfig, defaultConfigForKind } from "./confi
 export function decryptEnv(stored: StoredIntegrationConfig): Record<string, string> {
   if (!stored.envEnc) return {};
   const plain = decryptField(stored.envEnc);
-  if (!plain) return {};
+  if (!plain) {
+    // Stored secrets exist but won't decrypt → surface the key mismatch instead
+    // of launching the integration with an empty (and confusingly "unauthorized") env.
+    console.error("[integrations] failed to decrypt env secrets — APP_ENCRYPTION_KEY may have changed.");
+    return {};
+  }
   try {
     const obj = JSON.parse(plain);
     if (obj && typeof obj === "object") {

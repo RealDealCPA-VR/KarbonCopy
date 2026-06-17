@@ -109,6 +109,7 @@ export async function createTimeEntry(actor: Actor, input: unknown) {
       rateCents: data.rateCents ?? null,
     })
     .returning();
+  if (!row) throw notFound("Time entry");
   await logActivity({
     actorId: actor.id, verb: "created", entityKind: "time_entry", entityId: row.id,
     summary: `${actor.name} logged ${row.minutes} min (via API)`,
@@ -134,6 +135,7 @@ export async function updateTimeEntry(actor: Actor, id: string, input: unknown) 
     if (data[k] !== undefined) patch[k] = data[k];
   }
   const [row] = await db.update(timeEntries).set(patch).where(eq(timeEntries.id, id)).returning();
+  if (!row) throw notFound("Time entry");
   await logActivity({
     actorId: actor.id, verb: "updated", entityKind: "time_entry", entityId: id,
     summary: `${actor.name} updated a time entry (via API)`,

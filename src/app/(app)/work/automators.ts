@@ -12,7 +12,8 @@
  *   task_completed   — a checklist task was completed      (toggleTask)
  *   all_tasks_done   — the last open task was completed    (toggleTask)
  *   due_approaching  — due date within N days (scheduler)  (scheduler.ts)
- *   file_event       — a watched-file rule matched         (watcher / scheduler)
+ *   file_event       — NOT YET WIRED (no runAutomators("file_event") caller);
+ *                      disabled in the UI + rejected by the settings validator.
  *
  * Actions now supported:
  *   set_status  | assign | notify | create_task | create_work | send_email(stub)

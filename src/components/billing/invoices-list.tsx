@@ -79,7 +79,7 @@ export function InvoicesList({
       const due = inv.totalCents - inv.amountPaidCents;
       if (inv.status === "draft") draftCount += 1;
       if (inv.status !== "draft" && inv.status !== "paid" && due > 0) outstanding += due;
-      if (inv.status === "overdue") overdue += due;
+      if (inv.status === "overdue") overdue += Math.max(0, due);
       // Paid this month: collected amount on invoices whose issue/paid lands this month.
       if (inv.amountPaidCents > 0) {
         const ref = inv.issueDate ?? 0;

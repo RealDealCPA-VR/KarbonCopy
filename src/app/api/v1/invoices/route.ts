@@ -3,7 +3,7 @@ import { listInvoices, createInvoice } from "@/lib/api/services/billing";
 
 // GET /api/v1/invoices — list invoices.
 export const GET = (req: Request) =>
-  handle(req, (actor) => listInvoices(actor, query(req)));
+  handle(req, (actor) => listInvoices(actor, query(req, ["organizationId", "status"])));
 
 // POST /api/v1/invoices — create an invoice.
 export const POST = (req: Request) =>

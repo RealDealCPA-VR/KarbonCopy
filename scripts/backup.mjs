@@ -11,10 +11,14 @@
  *
  * Windows Task Scheduler (daily 02:00) — run from the project root:
  *   schtasks /Create /SC DAILY /ST 02:00 /TN "KarbonCopy Backup" ^
- *     /TR "cmd /c cd /d C:\Users\VR\projects\KarbonCopy && pnpm backup >> logs\backup.log 2>&1"
+ *     /TR "cmd /c cd /d <KARBONCOPY_ROOT> && pnpm backup >> logs\backup.log 2>&1"
  * (Adjust the path; use the same account that runs the server. Verify with
  *  `schtasks /Query /TN "KarbonCopy Backup"`.)
  */
+import { config as loadEnv } from "dotenv";
+loadEnv({ path: ".env.local" });
+loadEnv();
+
 import Database from "better-sqlite3";
 import { mkdirSync, readdirSync, statSync, unlinkSync, copyFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -33,6 +37,11 @@ function isoStamp() {
 }
 
 async function main() {
+  // Ensure ./logs exists so a scheduled `pnpm backup >> logs\backup.log` doesn't
+  // fail to open its redirect target on a fresh install (before the server has
+  // run). Created relative to the cwd the scheduled task runs from.
+  try { mkdirSync(join(process.cwd(), "logs"), { recursive: true }); } catch {}
+
   const dbPath = resolveDbPath();
   if (!existsSync(dbPath)) {
     console.error(`[backup] DB not found at ${dbPath}`);

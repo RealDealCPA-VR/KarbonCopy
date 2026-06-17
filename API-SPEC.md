@@ -25,7 +25,7 @@ create/update = `requireWrite` (staff+); delete/archive = `requireManager`.
 - `contacts.ts` — list/get/create/update/deleteContact (+ filter by organizationId; fields: firstName,lastName,email,phone,title,organizationId,isPrimary,portalEnabled)
 - `work.ts` — list/get/createWorkItem (title, workTypeId?, statusId?, organizationId?, assigneeId?, priority?, dueDate?, budgetMinutes?), updateWorkItem, completeWorkItem(actor,id); tasks: listTasks(actor,workItemId), addTask, toggleTask(actor,taskId,completed)
 - `time.ts` — list/create/update/deleteTimeEntry (userId defaults to actor.id; workItemId?, minutes, date, billable?, description?, rateCents?)
-- `billing.ts` — listInvoices, getInvoice, createInvoice(actor,{organizationId,issueDate?,dueDate?,lines:[{description,quantity,unitCents}],taxCents?,discountCents?,notes?,terms?}) → computes totals + sequential number, recordPayment(actor,{invoiceId,amountCents,method?,reference?}), listPayments
+- `billing.ts` — listInvoices, getInvoice, createInvoice(actor,{organizationId,issueDate?,dueDate?,lines:[{description,quantity,unitCents}],taxBps?,discountCents?,notes?,terms?}) → computes totals (tax = taxBps applied to subtotal−discount) + sequential number, recordPayment(actor,{invoiceId,amountCents,method?,reference?}), listPayments
 - `deadlines.ts` — list/get/createDeadline (organizationId,name,dueDate,form?,jurisdiction?,taxPeriod?), updateDeadline, setDeadlineStatus(actor,id,status)
 - `reference.ts` — listWorkTypes/listWorkStatuses/listUsers/listTags (read-only, any actor; for resolving ids)
 - `search.ts` — `search(actor, query, {limit?})` → `{ organizations[], contacts[], workItems[], invoices[] }` (name/title contains)

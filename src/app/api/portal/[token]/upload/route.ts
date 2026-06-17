@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { broadcast, emitToUser } from "@/server/realtime";
-import { storeUpload, UploadError, MAX_UPLOAD_BYTES, removeStoredFile } from "@/app/api/documents/_storage";
+import { storeUpload, UploadError, MAX_UPLOAD_BYTES, removeStoredFile, absoluteStoragePath } from "@/app/api/documents/_storage";
 import { checkRateLimit, clientIp } from "@/app/api/documents/_ratelimit";
 import type { RequestStatus } from "@/db/schema";
 
@@ -30,11 +30,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     );
   }
 
-  const [request] = await db
-    .select()
-    .from(schema.documentRequests)
-    .where(eq(schema.documentRequests.magicToken, token))
-    .limit(1);
+  let request;
+  try {
+    [request] = await db
+      .select()
+      .from(schema.documentRequests)
+      .where(eq(schema.documentRequests.magicToken, token))
+      .limit(1);
+  } catch (err) {
+    console.error("[portal/upload] request lookup failed:", (err as Error).message);
+    return NextResponse.json({ error: "Failed to load upload request." }, { status: 500 });
+  }
 
   if (!request) {
     return NextResponse.json({ error: "This upload link is invalid." }, { status: 404 });
@@ -76,7 +82,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     if (err instanceof UploadError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    throw err;
+    console.error("[portal/upload] file storage failed:", (err as Error).message);
+    return NextResponse.json({ error: "File storage failed." }, { status: 500 });
   }
 
   // Atomically: insert the document + activity, and re-read/modify/write the
@@ -114,6 +121,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
         })
         .returning()
         .all();
+      if (!inserted) throw new Error("DOCUMENT_INSERT_FAILED");
 
       let txLabel = stored.name;
       if (itemIndex >= 0 && itemIndex < txItems.length) {
@@ -151,24 +159,45 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     if (err instanceof Error && err.message === "REQUEST_GONE") {
       return NextResponse.json({ error: "This upload link is invalid." }, { status: 404 });
     }
-    throw err;
+    console.error("[portal/upload] commit failed:", (err as Error).message);
+    return NextResponse.json({ error: "We couldn't save the upload." }, { status: 500 });
+  }
+
+  // Run the on-prem OCR → classify → extract → auto-match pipeline on the
+  // client-uploaded file (fire-and-forget), same as watcher/manual uploads.
+  try {
+    const { processDocument } = await import("@/server/ocr");
+    void processDocument({
+      sourcePath: absoluteStoragePath(doc.storagePath),
+      documentId: doc.id,
+      organizationId: doc.organizationId ?? null,
+    }).catch((e) => console.error("[portal/upload] OCR pipeline error:", (e as Error).message));
+  } catch (e) {
+    console.error("[portal/upload] failed to start OCR pipeline:", (e as Error).message);
   }
 
   // Notify the staff member who created the request + live broadcast (outside the tx).
+  // Best-effort: the document is already persisted, so a notification failure must
+  // not turn a successful upload into a 500 for the client.
   if (request.createdById) {
-    await db.insert(schema.notifications).values({
-      userId: request.createdById,
-      type: "file_alert",
-      title: "Client uploaded a document",
-      body: `${label} was uploaded for "${request.title}".`,
-      entityKind: "document",
-      entityId: doc.id,
-    });
-    emitToUser(request.createdById, "notification", {
-      type: "file_alert",
-      entityKind: "document",
-      entityId: doc.id,
-    });
+    try {
+      const [notif] = await db
+        .insert(schema.notifications)
+        .values({
+          userId: request.createdById,
+          type: "file_alert",
+          title: "Client uploaded a document",
+          body: `${label} was uploaded for "${request.title}".`,
+          entityKind: "document",
+          entityId: doc.id,
+        })
+        .returning();
+      // Emit the full row so the client toast has title/body, matching every
+      // other notification emit in the app.
+      if (notif) emitToUser(request.createdById, "notification", notif);
+    } catch (err) {
+      console.error("[portal/upload] notification failed:", (err as Error).message);
+    }
   }
   broadcast("file_event", {
     type: "portal_upload",

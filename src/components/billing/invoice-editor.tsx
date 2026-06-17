@@ -132,7 +132,10 @@ export function InvoiceEditor({
       const wipLines: EditorLine[] = res.groups.map((g: WipGroup) => ({
         key: nextKey(),
         description: `${g.label} — ${formatMinutes(g.minutes)}`,
-        quantity: (g.minutes / 60).toFixed(2),
+        // Enough precision that quantity × hourly rate reproduces the exact
+        // billable cents (toFixed(2) on hours dropped up to a cent per line);
+        // trailing zeros are trimmed so clean values still read "1.5".
+        quantity: String(Number((g.minutes / 60).toFixed(6))),
         unitDollars: centsToDollars(g.rateCents),
         workItemId: g.workItemId,
         timeEntryIds: g.entryIds,

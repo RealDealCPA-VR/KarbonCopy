@@ -110,7 +110,8 @@ export function deriveStatus(opts: {
   if (current === "void") return "void";
   if (current === "draft") return "draft";
 
-  if (totalCents > 0 && amountPaidCents >= totalCents) return "paid";
+  // A zero/negative total is fully satisfied; otherwise fully paid when covered.
+  if (totalCents <= 0 || amountPaidCents >= totalCents) return "paid";
   if (amountPaidCents > 0) return "partial";
 
   // No payment yet → sent, but flip to overdue once past due.
@@ -239,6 +240,7 @@ export function applyStripePayment(opts: {
       })
       .returning({ id: payments.id })
       .all();
+    if (!p) throw new Error("Payment could not be recorded.");
 
     tx.update(invoices)
       .set({

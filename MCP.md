@@ -110,9 +110,13 @@ Run it from the repository root so the working directory (and the relative
 | `update_client`  | Update a client by `id`. Requires staff+.                                 |
 | `list_contacts`  | List contacts; optional `organizationId` filter.                         |
 | `create_contact` | Create a contact. Requires staff+.                                        |
+| `get_contact`    | Get one contact by `id`.                                                  |
+| `update_contact` | Update a contact by `id`. Requires staff+.                                |
+| `delete_contact` | Delete (archive) a contact by `id`. Requires manager+.                   |
 | `list_work`      | List work items; optional `organizationId` / `assigneeId` / `statusId`.  |
 | `get_work`       | Get one work item by `id`.                                                |
 | `create_work`    | Create a work item. Requires staff+.                                      |
+| `update_work`    | Update a work item by `id`. Requires staff+.                              |
 | `complete_work`  | Mark a work item complete. Requires staff+.                              |
 | `add_task`       | Add a checklist task to a work item. Requires staff+.                    |
 | `toggle_task`    | Complete / reopen a checklist task. Requires staff+.                     |
@@ -124,6 +128,8 @@ Run it from the repository root so the working directory (and the relative
 | `record_payment` | Record a payment on an invoice (recomputes status). Requires staff+.     |
 | `list_deadlines` | List compliance deadlines; optional `organizationId` / `status`.        |
 | `create_deadline`| Create a compliance deadline. Requires staff+.                          |
+| `get_deadline`   | Get one compliance deadline by `id`.                                     |
+| `update_deadline`| Update a compliance deadline by `id`. Requires staff+.                  |
 | `list_reference` | Return work types + work statuses + users (for resolving ids).          |
 | `search`         | Cross-entity search across orgs, contacts, work items, invoices.        |
 

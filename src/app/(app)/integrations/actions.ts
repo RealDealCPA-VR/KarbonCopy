@@ -109,6 +109,7 @@ export async function createIntegration(
         config,
       })
       .returning({ id: integrationConfigs.id });
+    if (!row) throw new Error("Integration could not be created.");
 
     await audit(user.id, "created", `Added integration “${input.label.trim()}”`, row.id);
     revalidatePath("/integrations");
@@ -127,7 +128,8 @@ export async function updateIntegration(
     const [existing] = await db
       .select()
       .from(integrationConfigs)
-      .where(eq(integrationConfigs.id, id));
+      .where(eq(integrationConfigs.id, id))
+      .limit(1);
     if (!existing) return { ok: false, error: "Integration not found" };
 
     const prevConfig = parseStoredConfig(existing.config);
@@ -191,7 +193,8 @@ export async function testConnection(
     const [row] = await db
       .select()
       .from(integrationConfigs)
-      .where(eq(integrationConfigs.id, id));
+      .where(eq(integrationConfigs.id, id))
+      .limit(1);
     if (!row) return { ok: false, error: "Integration not found" };
 
     const stored = parseStoredConfig(row.config);
@@ -251,7 +254,8 @@ export async function syncClients(
     const [row] = await db
       .select()
       .from(integrationConfigs)
-      .where(eq(integrationConfigs.id, id));
+      .where(eq(integrationConfigs.id, id))
+      .limit(1);
     if (!row) return { ok: false, error: "Integration not found" };
 
     const stored = parseStoredConfig(row.config);
