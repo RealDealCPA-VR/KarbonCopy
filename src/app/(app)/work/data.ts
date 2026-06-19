@@ -1,7 +1,26 @@
 import "server-only";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db";
-import type { BoardData, WorkItemRow, WorkUser, WorkOrg, WorkTypeLite } from "@/components/work/types";
+import type { BoardData, WorkItemRow, WorkUser, WorkOrg, WorkContact, WorkTypeLite } from "@/components/work/types";
+
+/** Non-deleted contacts for the work dialog's bill-to / linked-contact selector. */
+export async function loadWorkContacts(): Promise<WorkContact[]> {
+  const rows = await db
+    .select({
+      id: schema.contacts.id,
+      firstName: schema.contacts.firstName,
+      lastName: schema.contacts.lastName,
+      organizationId: schema.contacts.organizationId,
+    })
+    .from(schema.contacts)
+    .where(isNull(schema.contacts.deletedAt))
+    .orderBy(asc(schema.contacts.lastName), asc(schema.contacts.firstName));
+  return rows.map((c) => ({
+    id: c.id,
+    name: `${c.firstName} ${c.lastName}`.trim(),
+    organizationId: c.organizationId,
+  }));
+}
 
 /** Load everything the board/list/calendar views need in one pass. */
 export async function loadBoardData(): Promise<BoardData> {

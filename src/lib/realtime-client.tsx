@@ -2,6 +2,7 @@
 import * as React from "react";
 import { io, type Socket } from "socket.io-client";
 import { toast } from "sonner";
+import type { FileEventPayload } from "@/components/alerts/types";
 
 type RealtimeCtx = {
   socket: Socket | null;
@@ -51,7 +52,7 @@ export function RealtimeProvider({
     });
 
     // Global toasts for file alerts + notifications.
-    s.on("file_event", (e: { message?: string; fileName?: string; severity?: string }) => {
+    s.on("file_event", (e: FileEventPayload) => {
       const msg = e.message ?? `${e.fileName} updated`;
       if (e.severity === "warning") toast.warning(msg);
       else toast.success(msg, { description: "File-server alert" });

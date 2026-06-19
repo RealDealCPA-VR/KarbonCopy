@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { asc, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { requireWrite } from "@/lib/auth";
-import { emitToUser } from "@/server/realtime";
+import { emitToUser, broadcast } from "@/server/realtime";
 import type { ThreadStatus } from "@/db/schema";
 
 const { inboxThreads, messages, workItems, workTasks, workStatuses, activities, notifications } =
@@ -308,6 +308,8 @@ export async function addMessage(form: FormData): Promise<ActionResult<{ id: str
     return { ok: false, error: err instanceof Error ? err.message : "Failed to add message." };
   }
 
+  // Live-refresh open Triage views (matches the email poller + send paths).
+  broadcast("inbox_message", { threadId, direction });
   revalidateInbox(threadId);
   return { ok: true, data: { id: row.id } };
 }

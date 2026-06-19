@@ -13,18 +13,25 @@ export function getIO(): IOServer | undefined {
   return g.__io;
 }
 
+/** The set of realtime event names the app emits (keep in sync with the
+ *  broadcast()/emitToUser() call sites and the client listeners). */
 export type RealtimeEvent =
-  | { type: "file_event"; payload: unknown }
-  | { type: "notification"; payload: unknown }
-  | { type: "work_updated"; payload: unknown }
-  | { type: "presence"; payload: unknown };
+  | "file_event"
+  | "notification"
+  | "work_updated"
+  | "presence"
+  | "anomaly_scan"
+  | "document_upload"
+  | "extraction"
+  | "inbox_message"
+  | "signature_event";
 
 /** Broadcast to everyone on the LAN. */
-export function broadcast(event: string, payload: unknown) {
+export function broadcast(event: RealtimeEvent, payload: unknown) {
   g.__io?.emit(event, payload);
 }
 
 /** Send to a single user's room (room name = `user:<id>`). */
-export function emitToUser(userId: string, event: string, payload: unknown) {
+export function emitToUser(userId: string, event: RealtimeEvent, payload: unknown) {
   g.__io?.to(`user:${userId}`).emit(event, payload);
 }

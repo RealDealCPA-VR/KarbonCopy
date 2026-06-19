@@ -13,7 +13,7 @@ rebuild it.
 3. **Only create/edit files inside your assigned paths.** Do not touch other modules' folders,
    `server.ts`, `src/middleware.ts`, `src/lib/auth.ts`, `src/db/*`, or `src/components/ui/*`
    (those primitives already exist — import them).
-4. Replace the placeholder page at your route (it currently renders `<PageStub/>`).
+4. Replace any placeholder content at your route with the real implementation.
 
 ## Stack facts
 - DB: `import { db, schema } from "@/db"` — Drizzle (better-sqlite3). Query with `drizzle-orm`
@@ -43,8 +43,8 @@ Lucide icons via `lucide-react`. Charts via `recharts`. Dates via `date-fns`.
 - **Empty states & loading**: every list has a friendly empty state and (where useful) skeletons.
 - **Quality bar**: this is a flagship product. Polished spacing, hover/active states, keyboard
   focus, responsive, dark-mode correct (use the CSS-var tokens, never hard-coded colors).
-- 21st.dev components (https://21st.dev/community/components) are shadcn-compatible — match that
-  visual quality: generous whitespace, soft shadows, rounded-xl cards, subtle motion.
+- Match a polished shadcn/ui visual quality: generous whitespace, soft shadows, rounded-xl cards,
+  subtle motion.
 
 ## Final report (return as your last message)
 - Files created/edited (paths)

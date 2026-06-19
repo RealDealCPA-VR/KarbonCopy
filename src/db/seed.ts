@@ -54,6 +54,7 @@ async function main() {
     .values([
       { name: "1040 Individual", color: "#3b82f6", defaultBudgetMinutes: 240 },
       { name: "1120S S-Corp", color: "#8b5cf6", defaultBudgetMinutes: 480 },
+      { name: "1065 Partnership", color: "#ec4899", defaultBudgetMinutes: 420 },
       { name: "Monthly Bookkeeping", color: "#22c55e", defaultBudgetMinutes: 180 },
       { name: "Payroll", color: "#f97316", defaultBudgetMinutes: 90 },
     ])
@@ -87,7 +88,7 @@ async function main() {
     { title: "Q2 Bookkeeping — Bright Cafe", typeKey: "Monthly", org: 1, status: "To Start", due: now + 2 * day, assignee: 3 },
     { title: "2024 1120S — Bright Cafe", typeKey: "1120S", org: 1, status: "Review", due: now - 1 * day, assignee: 1 },
     { title: "Payroll Setup — Sunrise Dental", typeKey: "Payroll", org: 2, status: "Waiting on Client", due: now + 10 * day, assignee: 2 },
-    { title: "2024 1065 — Green Valley Farms", typeKey: "1120S", org: 3, status: "To Start", due: now + 14 * day, assignee: 0 },
+    { title: "2024 1065 — Green Valley Farms", typeKey: "1065", org: 3, status: "To Start", due: now + 14 * day, assignee: 0 },
     { title: "Monthly Close — Coastal Realty", typeKey: "Monthly", org: 4, status: "In Progress", due: now - 3 * day, assignee: 3 },
   ];
   const workItems = await db

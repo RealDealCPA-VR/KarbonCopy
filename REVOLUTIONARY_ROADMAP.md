@@ -95,7 +95,7 @@ for portal/payments/email/webhooks (clients are off-LAN — this is a prerequisi
 - **2026-06-15 — Programmatic / agent data-entry layer shipped & e2e-tested (18/18 green).** Pure
   service layer (`src/lib/api/services/*`, RBAC + zod + activity log, no Next deps) consumed by BOTH
   a key-authed **`/api/v1` REST API** (22 routes, `API.md`) and an in-repo **MCP server**
-  (`pnpm mcp`, 28 tools, `MCP.md`) so Claude/scripts can create+query clients, work, tasks, time,
+  (`pnpm mcp`, 33 tools, `MCP.md`) so Claude/scripts can create+query clients, work, tasks, time,
   invoices, payments, deadlines, search, reference. New `apiKeys` table + `Settings → API Keys` UI
   (mint once / revoke, acts-as-user). **End-to-end verified:** REST (auth 401, CRUD, invoice totals,
   search, 422 validation, key revocation) + MCP over stdio (tools/list, create_client, search) +

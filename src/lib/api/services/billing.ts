@@ -35,6 +35,7 @@ const lineInput = z.object({
 
 const createInvoiceInput = z.object({
   organizationId: z.string().trim().min(1),
+  contactId: z.string().trim().min(1).optional(),
   issueDate: dateCoerce.optional(),
   dueDate: dateCoerce.optional(),
   lines: z.array(lineInput).min(1),
@@ -194,6 +195,7 @@ export async function createInvoice(actor: Actor, input: unknown) {
       .values({
         number,
         organizationId: data.organizationId,
+        contactId: data.contactId || null,
         status: "draft" as InvoiceStatus,
         issueDate: data.issueDate ?? null,
         dueDate: data.dueDate ?? null,

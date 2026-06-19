@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useRealtimeEvent } from "@/lib/realtime-client";
 import { AnomalyCard } from "./anomaly-card";
 import { sevMeta } from "./severity";
 import type { AnomalyItem, AnomalySeverity } from "./types";
@@ -46,6 +47,9 @@ export function Radar({
   clients: { id: string; name: string }[];
 }) {
   const router = useRouter();
+  // Live-refresh when a books-health scan completes anywhere (scan.ts broadcasts
+  // "anomaly_scan") — e.g. from another tab or a background trigger.
+  useRealtimeEvent("anomaly_scan", () => router.refresh());
   const [items, setItems] = React.useState<AnomalyItem[]>(initial);
   const [status, setStatus] = React.useState<StatusFilter>("open");
   const [sev, setSev] = React.useState<SevFilter>("all");

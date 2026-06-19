@@ -74,6 +74,7 @@ export type WorkItemInput = {
   statusId?: string | null;
   priority?: WorkPriority;
   organizationId?: string | null;
+  contactId?: string | null;
   assigneeId?: string | null;
   startDate?: string | null;
   dueDate?: string | null;
@@ -92,6 +93,7 @@ export async function saveWorkItem(input: WorkItemInput) {
     statusId: input.statusId || null,
     priority: input.priority ?? "normal",
     organizationId: input.organizationId || null,
+    contactId: input.contactId || null,
     assigneeId: input.assigneeId || null,
     startDate: toDate(input.startDate),
     dueDate: toDate(input.dueDate),

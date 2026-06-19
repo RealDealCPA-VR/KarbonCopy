@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Inbox, MailQuestion, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useRealtimeEvent } from "@/lib/realtime-client";
 import { ThreadList } from "./thread-list";
 import { Conversation } from "./conversation";
 import { ContextPanel } from "./context-panel";
@@ -43,6 +44,10 @@ export function Triage({
   const router = useRouter();
   const params = useSearchParams();
   const [tab, setTab] = React.useState<FilterTab>("all");
+
+  // Live-refresh the inbox when a new inbound/outbound message lands (the email
+  // poller + send path broadcast "inbox_message").
+  useRealtimeEvent("inbox_message", () => router.refresh());
 
   const [selectedId, setSelectedId] = React.useState<string | null>(
     initialThreadId && detailsById[initialThreadId] ? initialThreadId : null,

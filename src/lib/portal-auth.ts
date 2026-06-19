@@ -13,7 +13,7 @@
  */
 import "server-only";
 import { cookies } from "next/headers";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "@/db";
 import type { Contact, Organization, PortalUser } from "@/db/schema";
@@ -127,11 +127,5 @@ export async function invalidatePortalSessions(portalUserId: string): Promise<vo
   await db.delete(portalSessions).where(eq(portalSessions.portalUserId, portalUserId));
 }
 
-/** Best-effort cleanup of expired portal sessions. */
-export async function pruneExpiredPortalSessions(): Promise<void> {
-  try {
-    await db.delete(portalSessions).where(lt(portalSessions.expiresAt, new Date()));
-  } catch {
-    /* non-fatal */
-  }
-}
+// NOTE: expired-portal-session pruning lives in lib/session.ts (not here) so the
+// non-"server-only" server.ts can call it. See pruneExpiredPortalSessions there.

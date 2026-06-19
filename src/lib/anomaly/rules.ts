@@ -197,7 +197,7 @@ export function detectDuplicatePayments(
         const days = cluster.map((c) => isoDay(c.date!));
         out.push({
           kind: "duplicate_payment",
-          severity: cluster.length >= 3 ? "critical" : "critical",
+          severity: cluster.length >= 3 ? "critical" : "warning",
           title: `Possible duplicate payment to ${vendor}`,
           detail:
             `${cluster.length} payments of ${fmt(amount)} to ${vendor} within ` +

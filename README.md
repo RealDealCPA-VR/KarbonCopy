@@ -61,7 +61,8 @@ because no competitor runs *inside your building*.
 **Run the firm**
 - 📋 **Work** — Kanban / list / calendar, drag-to-restage, checklists, templates, automators
 - 🗓️ **Compliance calendar** — federal + state deadlines **auto-generated** from each client's
-  entity type & fiscal year; the scheduler spawns the recurring work for you
+  entity type & fiscal year and kept current by the daily scheduler; turn any deadline into a
+  tracked work item on demand (or bulk-generate them with one click)
 - 👥 **Clients / CRM** — orgs, contacts, timelines, custom fields, **encrypted EIN/SSN**
 - 📨 **Triage inbox** — shared firm inbox with **real two-way email** (SMTP + IMAP) and Claude-drafted replies
 - ⏱️ **Time & budgets** — live timers, timesheets, budget-vs-actual, approvals
@@ -80,7 +81,7 @@ because no competitor runs *inside your building*.
   template + tasks + automations grounded in *your* firm's setup
 - 📊 **Insights** — throughput, realization, WIP, and a staff **capacity heatmap**
 
-All wrapped in a fast, modern, dark-mode UI (Next.js 15 + Tailwind + shadcn/21st.dev), with a
+All wrapped in a fast, modern, dark-mode UI (Next.js 15 + Tailwind + shadcn/ui), with a
 ⌘K command palette, live presence, and real-time notifications across the whole office.
 
 ---
@@ -92,20 +93,20 @@ client) at it and *talk to your practice*: "create a client for Riverside Dental
 monthly bookkeeping job, and draft a $1,200 invoice." Two ways in, one shared, RBAC-enforced
 service layer:
 
-- 🔌 **Built-in MCP server** (`pnpm mcp`) — 28 tools (`create_client`, `create_work`, `log_time`,
+- 🔌 **Built-in MCP server** (`pnpm mcp`) — 33 tools (`create_client`, `create_work`, `log_time`,
   `create_invoice`, `record_payment`, `create_deadline`, `search`, …). Add it to Claude in 30
   seconds — see [`MCP.md`](./MCP.md).
 - 🌐 **`/api/v1` REST API** — key-authenticated CRUD over every entity, for scripts & automations.
 
-Mint a scoped key in **Settings → API Keys** (it acts *as* a chosen user, inherits their role, and
-is shown once). Same encryption, same permissions, same audit trail as a human — your data still
+Mint a scoped key on the **API Keys** page (open it from the ⌘K command palette → "API Keys", or
+go to `/settings/api-keys`) — it acts *as* a chosen user, inherits their role, and is shown once. Same encryption, same permissions, same audit trail as a human — your data still
 never leaves the box. Full reference: [`API.md`](./API.md).
 
 ```jsonc
 // Claude Desktop → claude_desktop_config.json
 { "mcpServers": { "karboncopy": {
   "command": "pnpm", "args": ["mcp"], "cwd": "C:\\path\\to\\KarbonCopy",
-  "env": { "KARBONCOPY_API_KEY": "kc_live_…", "APP_ENCRYPTION_KEY": "…" }
+  "env": { "KARBONCOPY_API_KEY": "kc_live_…", "DATABASE_URL": "file:./data/karboncopy.db", "APP_ENCRYPTION_KEY": "…" }
 }}}
 ```
 
@@ -143,7 +144,7 @@ Drop these in `.env.local` to unlock the power features — KarbonCopy degrades 
 | `ANTHROPIC_API_KEY` | Claude email drafts, doc classification, AI workflow builder |
 | `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` | Card/ACH invoice payments via the client portal |
 | Email account in **Settings → Email** | Real two-way client email in Triage |
-| MCP config in **Settings → Integrations** | Live QuickBooks Desktop & Lacerte |
+| MCP config on the **Integrations** page | Live QuickBooks Desktop & Lacerte |
 | Watched folder in **Settings → Watched Folders** | The file-server alert + OCR intake engine |
 
 ---
@@ -160,7 +161,7 @@ One process. One SQLite file. Zero cloud dependencies.
 | Realtime | Socket.IO (cookie-authenticated) — alerts, presence, notifications |
 | Auth | scrypt + cookie sessions, 5-tier RBAC; encrypted PII at rest |
 | Integrations | QuickBooks Desktop / Lacerte over **localhost** MCP |
-| UI | Tailwind + shadcn/ui + 21st.dev components |
+| UI | Tailwind + shadcn/ui (Radix primitives) |
 
 The public surface (client portal, payments, inbound email) is a small **route allowlist** you
 expose via a reverse proxy / Cloudflare Tunnel — the rest stays firewalled on the LAN. See

@@ -70,10 +70,8 @@ export function DocumentRequests({
   const [createOpen, setCreateOpen] = React.useState(false);
 
   // Live refresh when a client uploads via the portal.
-  useRealtimeEvent("file_event", (payload: unknown) => {
-    if (payload && typeof payload === "object" && (payload as { type?: string }).type === "portal_upload") {
-      router.refresh();
-    }
+  useRealtimeEvent("document_upload", () => {
+    router.refresh();
   });
 
   return (

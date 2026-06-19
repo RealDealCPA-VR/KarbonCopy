@@ -19,6 +19,13 @@ export type WorkOrg = {
   name: string;
 };
 
+/** Minimal contact shape for the bill-to / linked-contact selector. */
+export type WorkContact = {
+  id: string;
+  name: string;
+  organizationId: string | null;
+};
+
 export type WorkTypeLite = {
   id: string;
   name: string;

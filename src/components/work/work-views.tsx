@@ -11,11 +11,11 @@ import { ListView } from "./list-view";
 import { CalendarView } from "./calendar-view";
 import { FiltersBar, ALL, type Filters } from "./filters-bar";
 import { WorkDialog } from "./work-dialog";
-import type { BoardData, WorkItemRow, WorkItem } from "./types";
+import type { BoardData, WorkItemRow, WorkItem, WorkContact } from "./types";
 
 type PrefilterMode = "overdue" | "week" | null;
 
-export function WorkViews({ data }: { data: BoardData }) {
+export function WorkViews({ data, contacts }: { data: BoardData; contacts: WorkContact[] }) {
   const { statuses, items, users, orgs, workTypes } = data;
   const searchParams = useSearchParams();
 
@@ -162,6 +162,7 @@ export function WorkViews({ data }: { data: BoardData }) {
         item={editItem}
         users={users}
         orgs={orgs}
+        contacts={contacts}
         workTypes={workTypes}
         statuses={statuses}
         defaultStatusId={defaultStatusId}

@@ -23,9 +23,9 @@ create/update = `requireWrite` (staff+); delete/archive = `requireManager`.
 
 **Modules + functions to build** (exemplar `organizations.ts` already done):
 - `contacts.ts` — list/get/create/update/deleteContact (+ filter by organizationId; fields: firstName,lastName,email,phone,title,organizationId,isPrimary,portalEnabled)
-- `work.ts` — list/get/createWorkItem (title, workTypeId?, statusId?, organizationId?, assigneeId?, priority?, dueDate?, budgetMinutes?), updateWorkItem, completeWorkItem(actor,id); tasks: listTasks(actor,workItemId), addTask, toggleTask(actor,taskId,completed)
+- `work.ts` — list/get/createWorkItem (title, workTypeId?, statusId?, organizationId?, contactId?, assigneeId?, priority?, startDate?, dueDate?, budgetMinutes?), updateWorkItem, completeWorkItem(actor,id); tasks: listTasks(actor,workItemId), addTask, toggleTask(actor,taskId,completed)
 - `time.ts` — list/create/update/deleteTimeEntry (userId defaults to actor.id; workItemId?, minutes, date, billable?, description?, rateCents?)
-- `billing.ts` — listInvoices, getInvoice, createInvoice(actor,{organizationId,issueDate?,dueDate?,lines:[{description,quantity,unitCents}],taxBps?,discountCents?,notes?,terms?}) → computes totals (tax = taxBps applied to subtotal−discount) + sequential number, recordPayment(actor,{invoiceId,amountCents,method?,reference?}), listPayments
+- `billing.ts` — listInvoices, getInvoice, createInvoice(actor,{organizationId,contactId?,issueDate?,dueDate?,lines:[{description,quantity,unitCents}],taxBps?,discountCents?,notes?,terms?}) → computes totals (tax = taxBps applied to subtotal−discount) + sequential number, recordPayment(actor,{invoiceId,amountCents,method?,reference?}), listPayments
 - `deadlines.ts` — list/get/createDeadline (organizationId,name,dueDate,form?,jurisdiction?,taxPeriod?), updateDeadline, setDeadlineStatus(actor,id,status)
 - `reference.ts` — listWorkTypes/listWorkStatuses/listUsers/listTags (read-only, any actor; for resolving ids)
 - `search.ts` — `search(actor, query, {limit?})` → `{ organizations[], contacts[], workItems[], invoices[] }` (name/title contains)
@@ -49,11 +49,13 @@ Keep money in integer cents; dates accept ISO strings or epoch ms (coerce in zod
 - Use `@modelcontextprotocol/sdk` `Server` + `StdioServerTransport`. Name "karboncopy".
 - Auth: read `process.env.KARBONCOPY_API_KEY`, resolve via `resolveActorFromKey`; if absent/invalid,
   still start but every tool returns an auth error (so `tools/list` works for discovery).
-- Register one tool per high-value service fn with a JSON-schema input: `list_clients, get_client,
-  create_client, update_client, create_contact, list_contacts, list_work, create_work,
-  complete_work, add_task, log_time, list_invoices, create_invoice, record_payment, list_deadlines,
-  create_deadline, search, list_reference`. Each tool calls the service with the resolved actor and
-  returns `content:[{type:"text", text: JSON.stringify(result)}]`; on ApiError return `isError:true`.
+- Register one tool per high-value service fn with a JSON-schema input — full CRUD across the
+  entities (33 tools today): clients (`list/get/create/update/delete_client`), contacts
+  (`list/get/create/update/delete_contact`), work (`list/get/create/update/complete_work`,
+  `add_task/toggle_task/list_tasks`), time (`log_time/list_time/update_time/delete_time`), invoices
+  (`list/get/create_invoice`, `record_payment`, `list_payments`), deadlines (`list/get/create/update_deadline`), plus
+  `search` and `list_reference`. Each tool calls the service with the resolved actor and returns
+  `content:[{type:"text", text: JSON.stringify(result)}]`; on ApiError return `isError:true`.
 - Load env first (dotenv `.env.local`), like `server.ts`. Add `package.json` script
   `"mcp": "tsx --tsconfig tsconfig.server.json src/mcp/server.ts"` and document the Claude Desktop /
   Claude Code config snippet in `MCP.md` (command, args, env: KARBONCOPY_API_KEY, DATABASE_URL,

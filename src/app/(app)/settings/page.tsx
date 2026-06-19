@@ -2,6 +2,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { Settings as SettingsIcon, ShieldAlert } from "lucide-react";
 import { db, schema } from "@/db";
 import { requireUser, hasRole } from "@/lib/auth";
+import { listSafeAccounts } from "@/lib/email/accounts";
 import { Card, CardContent } from "@/components/ui/card";
 import { SettingsShell } from "@/components/settings/settings-shell";
 
@@ -29,7 +30,7 @@ export default async function SettingsPage() {
     );
   }
 
-  const [roots, rules, userRows, autos, settingRows] = await Promise.all([
+  const [roots, rules, userRows, autos, settingRows, emailAccounts] = await Promise.all([
     db.select().from(watchedRoots).orderBy(asc(watchedRoots.createdAt)),
     db.select().from(fileRules).orderBy(asc(fileRules.createdAt)),
     db
@@ -45,6 +46,7 @@ export default async function SettingsPage() {
       .orderBy(asc(users.name)),
     db.select().from(automators).orderBy(asc(automators.createdAt)),
     db.select().from(settings).where(inArray(settings.key, ["firmName", "supportEmail"])),
+    listSafeAccounts(),
   ]);
 
   const ruleCounts: Record<string, number> = {};
@@ -73,6 +75,7 @@ export default async function SettingsPage() {
         ruleCounts={ruleCounts}
         users={userRows}
         automators={autos}
+        emailAccounts={emailAccounts}
         currentUserId={user.id}
         firmName={firmName}
         supportEmail={supportEmail}

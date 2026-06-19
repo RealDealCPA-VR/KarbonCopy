@@ -8,7 +8,7 @@ import { DetailHeader } from "@/components/work/detail-header";
 import { TaskChecklist } from "@/components/work/task-checklist";
 import { CommentThread } from "@/components/work/comment-thread";
 import { ActivityTimeline } from "@/components/work/activity-timeline";
-import type { WorkUser } from "@/components/work/types";
+import type { WorkUser, WorkContact } from "@/components/work/types";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +27,7 @@ export default async function WorkDetailPage({
 
   if (!item) notFound();
 
-  const [statuses, users, orgs, workTypes, tasks, comments, activities] = await Promise.all([
+  const [statuses, users, orgs, contactRows, workTypes, tasks, comments, activities] = await Promise.all([
     db.select().from(schema.workStatuses).orderBy(asc(schema.workStatuses.position)),
     db
       .select({
@@ -44,6 +44,16 @@ export default async function WorkDetailPage({
       .from(schema.organizations)
       .where(isNull(schema.organizations.deletedAt))
       .orderBy(asc(schema.organizations.name)),
+    db
+      .select({
+        id: schema.contacts.id,
+        firstName: schema.contacts.firstName,
+        lastName: schema.contacts.lastName,
+        organizationId: schema.contacts.organizationId,
+      })
+      .from(schema.contacts)
+      .where(isNull(schema.contacts.deletedAt))
+      .orderBy(asc(schema.contacts.lastName), asc(schema.contacts.firstName)),
     db
       .select({
         id: schema.workTypes.id,
@@ -70,6 +80,12 @@ export default async function WorkDetailPage({
       .limit(50),
   ]);
 
+  const contacts: WorkContact[] = contactRows.map((c) => ({
+    id: c.id,
+    name: `${c.firstName} ${c.lastName}`.trim(),
+    organizationId: c.organizationId,
+  }));
+
   const orgName = item.organizationId
     ? orgs.find((o) => o.id === item.organizationId)?.name ?? null
     : null;
@@ -91,6 +107,7 @@ export default async function WorkDetailPage({
         statuses={statuses}
         users={users as WorkUser[]}
         orgs={orgs}
+        contacts={contacts}
         workTypes={workTypes}
         orgName={orgName}
         workTypeName={workTypeName}

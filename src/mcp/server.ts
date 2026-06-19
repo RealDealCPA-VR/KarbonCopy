@@ -69,7 +69,7 @@ const pagination = {
 } as const;
 
 const dateField = {
-  description: "ISO date string (YYYY-MM-DD) or epoch milliseconds",
+  description: "ISO 8601 date string (e.g. 2024-01-15 or 2024-01-15T10:30:00Z) or epoch milliseconds",
 } as const;
 
 /* --------------------------------------------------------------------------
@@ -156,6 +156,12 @@ const tools: ToolDef[] = [
       const { id, ...patch } = a;
       return organizations.updateOrganization(actor, String(id), patch);
     },
+  },
+  {
+    name: "delete_client",
+    description: "Delete (archive) a client (organization) by id. Requires manager role or higher.",
+    inputSchema: idSchema("client (organization)"),
+    handler: (actor, a) => organizations.archiveOrganization(actor, String(a.id)),
   },
 
   /* ----------------------------- contacts -------------------------------- */
@@ -347,6 +353,17 @@ const tools: ToolDef[] = [
     },
     handler: (actor, a) => work.toggleTask(actor, String(a.taskId), Boolean(a.completed)),
   },
+  {
+    name: "list_tasks",
+    description: "List the checklist tasks for a work item.",
+    inputSchema: {
+      type: "object",
+      properties: { workItemId: str("Parent work item id (required)") },
+      required: ["workItemId"],
+      additionalProperties: false,
+    },
+    handler: (actor, a) => work.listTasks(actor, String(a.workItemId)),
+  },
 
   /* ----------------------------- time ------------------------------------ */
   {
@@ -383,6 +400,34 @@ const tools: ToolDef[] = [
     },
     handler: (actor, a) => time.listTimeEntries(actor, a),
   },
+  {
+    name: "update_time",
+    description: "Update a time entry by id. Requires staff role or higher.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: str("Time entry id (required)"),
+        minutes: num("Minutes worked (integer >= 0)"),
+        date: { ...dateField, description: "Date of the work — " + dateField.description },
+        workItemId: str("Work item id this time is against"),
+        billable: bool("Billable"),
+        description: str("What was done"),
+        rateCents: num("Billing rate in integer cents"),
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    handler: (actor, a) => {
+      const { id, ...patch } = a;
+      return time.updateTimeEntry(actor, String(id), patch);
+    },
+  },
+  {
+    name: "delete_time",
+    description: "Delete a time entry by id. Requires manager role or higher.",
+    inputSchema: idSchema("time entry"),
+    handler: (actor, a) => time.deleteTimeEntry(actor, String(a.id)),
+  },
 
   /* ----------------------------- billing --------------------------------- */
   {
@@ -413,6 +458,7 @@ const tools: ToolDef[] = [
       type: "object",
       properties: {
         organizationId: str("Client (organization) id (required)"),
+        contactId: str("Bill-to contact id (optional)"),
         issueDate: { ...dateField, description: "Issue date — " + dateField.description },
         dueDate: { ...dateField, description: "Due date — " + dateField.description },
         lines: {
@@ -455,6 +501,20 @@ const tools: ToolDef[] = [
       additionalProperties: false,
     },
     handler: (actor, a) => billing.recordPayment(actor, a),
+  },
+  {
+    name: "list_payments",
+    description: "List payments. Optionally filter by invoiceId or organizationId.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...pagination,
+        invoiceId: str("Filter to this invoice id"),
+        organizationId: str("Filter to this organization (client) id"),
+      },
+      additionalProperties: false,
+    },
+    handler: (actor, a) => billing.listPayments(actor, a),
   },
 
   /* ----------------------------- deadlines ------------------------------- */
@@ -523,15 +583,16 @@ const tools: ToolDef[] = [
   {
     name: "list_reference",
     description:
-      "Return reference data for resolving ids: work types, work statuses, and users.",
+      "Return reference data for resolving ids: work types, work statuses, users, and tags.",
     inputSchema: NONE,
     handler: async (actor) => {
-      const [workTypes, workStatuses, users] = await Promise.all([
+      const [workTypes, workStatuses, users, tags] = await Promise.all([
         reference.listWorkTypes(actor),
         reference.listWorkStatuses(actor),
         reference.listUsers(actor),
+        reference.listTags(actor),
       ]);
-      return { workTypes, workStatuses, users };
+      return { workTypes, workStatuses, users, tags };
     },
   },
   {

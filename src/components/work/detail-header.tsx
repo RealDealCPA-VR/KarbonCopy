@@ -25,13 +25,14 @@ import { setWorkStatus, deleteWorkItem, markWorkComplete } from "@/app/(app)/wor
 import { WorkDialog } from "./work-dialog";
 import { AssigneeAvatar, DueBadge, PriorityDot, StatusDot } from "./work-bits";
 import { PRIORITY_LABELS } from "./types";
-import type { WorkItem, WorkStatus, WorkUser, WorkOrg, WorkTypeLite } from "./types";
+import type { WorkItem, WorkStatus, WorkUser, WorkOrg, WorkContact, WorkTypeLite } from "./types";
 
 export function DetailHeader({
   item,
   statuses,
   users,
   orgs,
+  contacts,
   workTypes,
   orgName,
   workTypeName,
@@ -40,6 +41,7 @@ export function DetailHeader({
   statuses: WorkStatus[];
   users: WorkUser[];
   orgs: WorkOrg[];
+  contacts: WorkContact[];
   workTypes: WorkTypeLite[];
   orgName: string | null;
   workTypeName: string | null;
@@ -207,6 +209,7 @@ export function DetailHeader({
         item={item}
         users={users}
         orgs={orgs}
+        contacts={contacts}
         workTypes={workTypes}
         statuses={statuses}
       />

@@ -165,22 +165,6 @@ export async function findInvoiceByPayToken(token: string): Promise<Invoice | nu
   return row ?? null;
 }
 
-export async function findInvoiceById(id: string): Promise<Invoice | null> {
-  const [row] = await db.select().from(invoices).where(eq(invoices.id, id)).limit(1);
-  return row ?? null;
-}
-
-/** Has this Stripe processor reference already been recorded? (webhook idempotency) */
-export async function paymentExistsForRef(processorRef: string): Promise<boolean> {
-  if (!processorRef) return false;
-  const [row] = await db
-    .select({ id: schema.payments.id })
-    .from(schema.payments)
-    .where(and(eq(schema.payments.processorRef, processorRef), eq(schema.payments.processor, "stripe")))
-    .limit(1);
-  return Boolean(row);
-}
-
 /* ------------------------------------------------------------------ */
 /* Apply a Stripe payment (webhook)                                   */
 /* ------------------------------------------------------------------ */

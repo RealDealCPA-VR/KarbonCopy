@@ -199,8 +199,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
       console.error("[portal/upload] notification failed:", (err as Error).message);
     }
   }
-  broadcast("file_event", {
-    type: "portal_upload",
+  // Portal uploads use their own channel — the "file_event" channel is reserved
+  // for the watcher's FileEventPayload shape (consumed by the alerts feed).
+  broadcast("document_upload", {
     requestId: request.id,
     organizationId: request.organizationId,
     documentId: doc.id,

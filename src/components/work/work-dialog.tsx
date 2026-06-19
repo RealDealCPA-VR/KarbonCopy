@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { saveWorkItem, type WorkItemInput } from "@/app/(app)/work/actions";
 import { PRIORITY_LABELS } from "./types";
-import type { WorkUser, WorkOrg, WorkTypeLite, WorkStatus, WorkItem, WorkPriority } from "./types";
+import type { WorkUser, WorkOrg, WorkContact, WorkTypeLite, WorkStatus, WorkItem, WorkPriority } from "./types";
 
 const UNASSIGNED = "__none__";
 
@@ -40,6 +40,7 @@ export function WorkDialog({
   item,
   users,
   orgs,
+  contacts,
   workTypes,
   statuses,
   defaultStatusId,
@@ -49,6 +50,7 @@ export function WorkDialog({
   item?: WorkItem | null;
   users: WorkUser[];
   orgs: WorkOrg[];
+  contacts: WorkContact[];
   workTypes: WorkTypeLite[];
   statuses: WorkStatus[];
   defaultStatusId?: string | null;
@@ -67,6 +69,7 @@ export function WorkDialog({
       statusId: item?.statusId ?? defaultStatusId ?? statuses[0]?.id ?? null,
       priority: (item?.priority as WorkPriority) ?? "normal",
       organizationId: item?.organizationId ?? null,
+      contactId: item?.contactId ?? null,
       assigneeId: item?.assigneeId ?? null,
       startDate: toInputDate(item?.startDate),
       dueDate: toInputDate(item?.dueDate),
@@ -82,6 +85,24 @@ export function WorkDialog({
 
   function set<K extends keyof WorkItemInput>(key: K, value: WorkItemInput[K]) {
     setForm((f) => ({ ...f, [key]: value }));
+  }
+
+  // Contacts available for the currently-selected client (organization). When
+  // no client is selected we show all contacts so the field is still usable.
+  const availableContacts = React.useMemo(() => {
+    if (!form.organizationId) return contacts;
+    return contacts.filter((c) => c.organizationId === form.organizationId);
+  }, [contacts, form.organizationId]);
+
+  function onOrgChange(orgId: string | null) {
+    setForm((f) => {
+      // If the linked contact no longer belongs to the new org, clear it.
+      const keepContact =
+        f.contactId == null ||
+        !orgId ||
+        contacts.some((c) => c.id === f.contactId && c.organizationId === orgId);
+      return { ...f, organizationId: orgId, contactId: keepContact ? f.contactId : null };
+    });
   }
 
   function onWorkTypeChange(id: string) {
@@ -158,7 +179,7 @@ export function WorkDialog({
               <Label>Client</Label>
               <Select
                 value={form.organizationId ?? UNASSIGNED}
-                onValueChange={(v) => set("organizationId", v === UNASSIGNED ? null : v)}
+                onValueChange={(v) => onOrgChange(v === UNASSIGNED ? null : v)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select client" />
@@ -168,6 +189,26 @@ export function WorkDialog({
                   {orgs.map((o) => (
                     <SelectItem key={o.id} value={o.id}>
                       {o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>Contact</Label>
+              <Select
+                value={form.contactId ?? UNASSIGNED}
+                onValueChange={(v) => set("contactId", v === UNASSIGNED ? null : v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select contact" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={UNASSIGNED}>No contact</SelectItem>
+                  {availableContacts.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

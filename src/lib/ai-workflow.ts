@@ -24,8 +24,12 @@ import type { AutomatorTrigger, AutomatorAction, FileRuleEvent } from "@/db/sche
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
 
 /* ------------------------------------------------------------------ */
-/* The implemented automator + file-rule vocabulary (must match the    */
-/* engine in src/app/(app)/work/automators.ts and the schema enums).   */
+/* The AVAILABLE automator + file-rule vocabulary the AI may propose.   */
+/* This must match the manual-creation allowlist in settings/actions.ts */
+/* (AVAILABLE_AUTOMATOR_TRIGGERS/ACTIONS) — i.e. only triggers/actions   */
+/* that are actually wired. `file_event` (no runAutomators caller) and  */
+/* `send_email` (stub) are intentionally EXCLUDED so the AI can't        */
+/* generate an automator that the UI would refuse to create.            */
 /* ------------------------------------------------------------------ */
 
 export const AUTOMATOR_TRIGGERS: readonly AutomatorTrigger[] = [
@@ -33,7 +37,6 @@ export const AUTOMATOR_TRIGGERS: readonly AutomatorTrigger[] = [
   "work_created",
   "task_completed",
   "due_approaching",
-  "file_event",
   "all_tasks_done",
 ] as const;
 
@@ -42,7 +45,6 @@ export const AUTOMATOR_ACTIONS: readonly AutomatorAction[] = [
   "assign",
   "notify",
   "create_task",
-  "send_email",
   "create_work",
 ] as const;
 

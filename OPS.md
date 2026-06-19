@@ -10,7 +10,8 @@ and log rotation.
 > once** to create the initial admin login (`admin@firm.com` / `admin123`) and demo
 > data — without it you cannot sign in. Then start with `pnpm start`
 > (= `NODE_ENV=production tsx server.ts`). Health endpoint: `GET /healthz` returns
-> `{ ok: true, dev: false }` when healthy.
+> `{ ok: true, dev: <boolean>, ts: <epoch-ms> }` when healthy (`dev` is `true` unless
+> `NODE_ENV=production`).
 
 ---
 
@@ -165,5 +166,7 @@ If the migration fails, restore the snapshot per the Restore steps above.
 
 - `./logs/` — service stdout/stderr + `backup.log` (gitignored).
 - `./data/` — SQLite DB, uploads, and `data/backups/` (gitignored).
-- `DATA_DIR` / `DATABASE_URL` — override the DB location via env if data lives off the
-  project tree; `scripts/backup.mjs` honors `DATABASE_URL`.
+- `DATABASE_URL` — override the SQLite DB location via env if the database lives off the
+  project tree (e.g. `file:D:/karboncopy/karboncopy.db`); `scripts/backup.mjs` honors it too.
+  Uploads are currently stored under `./data/uploads` relative to the project root and aren't
+  yet relocatable (a single `DATA_DIR` root is planned — see REVOLUTIONARY_ROADMAP.md).

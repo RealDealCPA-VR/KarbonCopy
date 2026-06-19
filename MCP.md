@@ -108,6 +108,7 @@ Run it from the repository root so the working directory (and the relative
 | `get_client`     | Get one client by `id`.                                                   |
 | `create_client`  | Create a client. Requires staff+.                                         |
 | `update_client`  | Update a client by `id`. Requires staff+.                                 |
+| `delete_client`  | Delete (archive) a client by `id`. Requires manager+.                    |
 | `list_contacts`  | List contacts; optional `organizationId` filter.                         |
 | `create_contact` | Create a contact. Requires staff+.                                        |
 | `get_contact`    | Get one contact by `id`.                                                  |
@@ -120,17 +121,21 @@ Run it from the repository root so the working directory (and the relative
 | `complete_work`  | Mark a work item complete. Requires staff+.                              |
 | `add_task`       | Add a checklist task to a work item. Requires staff+.                    |
 | `toggle_task`    | Complete / reopen a checklist task. Requires staff+.                     |
+| `list_tasks`     | List a work item's checklist tasks.                                      |
 | `log_time`       | Log a time entry (defaults `userId` to the key's user). Requires staff+. |
 | `list_time`      | List time entries; optional `userId` / `workItemId`.                     |
+| `update_time`    | Update a time entry by `id`. Requires staff+.                            |
+| `delete_time`    | Delete a time entry by `id`. Requires manager+.                          |
 | `list_invoices`  | List invoices; optional `organizationId` / `status`.                     |
 | `get_invoice`    | Get one invoice (with lines) by `id`.                                     |
 | `create_invoice` | Create an invoice (totals + number computed server-side). Requires staff+. |
 | `record_payment` | Record a payment on an invoice (recomputes status). Requires staff+.     |
+| `list_payments`  | List payments; optional `invoiceId` / `organizationId`.                  |
 | `list_deadlines` | List compliance deadlines; optional `organizationId` / `status`.        |
 | `create_deadline`| Create a compliance deadline. Requires staff+.                          |
 | `get_deadline`   | Get one compliance deadline by `id`.                                     |
 | `update_deadline`| Update a compliance deadline by `id`. Requires staff+.                  |
-| `list_reference` | Return work types + work statuses + users (for resolving ids).          |
+| `list_reference` | Return work types + work statuses + users + tags (for resolving ids).    |
 | `search`         | Cross-entity search across orgs, contacts, work items, invoices.        |
 
 **Conventions:** money is always **integer cents**; dates accept **ISO strings

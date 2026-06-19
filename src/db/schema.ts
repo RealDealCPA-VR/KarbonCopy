@@ -405,8 +405,8 @@ export const comments = sqliteTable(
 );
 
 export type NotificationType =
-  | "mention" | "assignment" | "file_alert" | "due_soon" | "comment" | "automator" | "system"
-  | "invoice" | "payment" | "portal" | "signature" | "deadline" | "anomaly";
+  | "mention" | "assignment" | "file_alert" | "comment" | "automator" | "system"
+  | "payment" | "signature" | "deadline" | "anomaly";
 
 export const notifications = sqliteTable(
   "notifications",

@@ -1,15 +1,15 @@
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WorkViews } from "@/components/work/work-views";
-import { loadBoardData } from "./data";
+import { loadBoardData, loadWorkContacts } from "./data";
 
 export const dynamic = "force-dynamic";
 
 export default async function WorkPage() {
-  const data = await loadBoardData();
+  const [data, contacts] = await Promise.all([loadBoardData(), loadWorkContacts()]);
   return (
     <Suspense fallback={<BoardSkeleton />}>
-      <WorkViews data={data} />
+      <WorkViews data={data} contacts={contacts} />
     </Suspense>
   );
 }
